@@ -11,8 +11,8 @@ export function EmptyHome({ onCreateServer, onJoinServer }: Props) {
       <div
         className="h-16 w-16 rounded-2xl grid place-items-center mb-6 shrink-0"
         style={{
-          background: 'linear-gradient(135deg, #7EC4D4 0%, #5BBFD0 100%)',
-          boxShadow: '0 8px 32px -8px rgba(126,196,212,0.45)',
+          background: '#4F75FF',
+          boxShadow: '0 8px 28px -8px rgba(79,117,255,0.50)',
         }}
       >
         <svg
@@ -34,7 +34,7 @@ export function EmptyHome({ onCreateServer, onJoinServer }: Props) {
       <h1
         className="text-3xl font-semibold tracking-tight mb-2"
         style={{
-          background: 'linear-gradient(135deg, #EDE8F4 0%, #a8b8c8 100%)',
+          background: 'linear-gradient(135deg, #F2F2F6 0%, #9696A4 100%)',
           WebkitBackgroundClip: 'text',
           WebkitTextFillColor: 'transparent',
         }}
@@ -55,25 +55,25 @@ export function EmptyHome({ onCreateServer, onJoinServer }: Props) {
           onClick={onCreateServer}
           className="group flex-1 flex flex-col items-center gap-3 rounded-2xl px-5 py-6 transition-all duration-200"
           style={{
-            background: 'rgba(126,196,212,0.07)',
-            border: '1px solid rgba(126,196,212,0.18)',
+            background: 'rgba(79,117,255,0.07)',
+            border: '1px solid rgba(79,117,255,0.18)',
           }}
           onMouseEnter={(e) => {
             const el = e.currentTarget as HTMLButtonElement;
-            el.style.background = 'rgba(126,196,212,0.13)';
-            el.style.borderColor = 'rgba(126,196,212,0.32)';
+            el.style.background = 'rgba(79,117,255,0.13)';
+            el.style.borderColor = 'rgba(79,117,255,0.32)';
           }}
           onMouseLeave={(e) => {
             const el = e.currentTarget as HTMLButtonElement;
-            el.style.background = 'rgba(126,196,212,0.07)';
-            el.style.borderColor = 'rgba(126,196,212,0.18)';
+            el.style.background = 'rgba(79,117,255,0.07)';
+            el.style.borderColor = 'rgba(79,117,255,0.18)';
           }}
         >
           <div
             className="h-10 w-10 rounded-xl grid place-items-center shrink-0"
             style={{
-              background: 'rgba(126,196,212,0.16)',
-              border: '1px solid rgba(126,196,212,0.25)',
+              background: 'rgba(79,117,255,0.16)',
+              border: '1px solid rgba(79,117,255,0.25)',
             }}
           >
             {/* Plus-circle icon */}
@@ -82,7 +82,7 @@ export function EmptyHome({ onCreateServer, onJoinServer }: Props) {
               height="18"
               viewBox="0 0 24 24"
               fill="none"
-              stroke="#7EC4D4"
+              stroke="#4F75FF"
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"

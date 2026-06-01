@@ -1,4 +1,4 @@
-/* Sora — clean geometric sans, the body font for Ambient Lounge */
+/* Sora — clean geometric sans */
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600&display=swap');
 
 @tailwind base;
@@ -16,10 +16,10 @@
     font-family: 'Sora', ui-sans-serif, system-ui, sans-serif;
     font-feature-settings: 'cv11', 'ss01';
     font-weight: 400;
-    color: #EDE8F4;
-    background: #0C0A0F;
+    /* Clean neutral white — no purple/lavender cast */
+    color: #F2F2F6;
+    background: #0F0F12;
     overflow: hidden;
-    /* Prevent rubber-band bounce on iOS from exposing background */
     overscroll-behavior: none;
   }
   * {
@@ -27,33 +27,24 @@
     -moz-osx-font-smoothing: grayscale;
   }
   ::selection {
-    background: rgba(126, 196, 212, 0.28);
+    background: rgba(79, 117, 255, 0.30);
     color: #fff;
   }
-  /* Slim scrollbar — tinted to match the ambient palette */
-  ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-  ::-webkit-scrollbar-thumb {
-    background: rgba(126, 196, 212, 0.10);
-    border-radius: 6px;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background: rgba(126, 196, 212, 0.20);
-  }
-  ::-webkit-scrollbar-track {
-    background: transparent;
-  }
+  /* Neutral scrollbar — no color tint */
+  ::-webkit-scrollbar        { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-thumb  { background: rgba(255,255,255,0.12); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
+  ::-webkit-scrollbar-track  { background: transparent; }
 }
 
 @layer components {
   /* ── Surfaces ─────────────────────────────────────────────────────── */
+  /* Solid panels — no glassmorphism, better readability */
   .panel {
-    @apply bg-ink-900/75 backdrop-blur-xl border border-white/[0.06];
+    @apply bg-ink-900 border border-white/[0.09];
   }
   .panel-inner {
-    @apply bg-ink-800/50 border border-white/[0.06];
+    @apply bg-ink-800 border border-white/[0.08];
   }
 
   /* ── Buttons ──────────────────────────────────────────────────────── */
@@ -61,28 +52,28 @@
     @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium
            transition-all duration-150 select-none disabled:opacity-50 disabled:cursor-not-allowed;
   }
-  /* Primary — teal gradient, dark text for contrast */
+  /* Primary — solid blue, white text. High contrast, clean. */
   .btn-primary {
-    @apply btn text-ink-950 font-semibold;
-    background: linear-gradient(135deg, #7EC4D4 0%, #5BBFD0 100%);
-    box-shadow: 0 4px 18px -4px rgba(126, 196, 212, 0.38);
+    @apply btn text-white font-semibold;
+    background: #4F75FF;
+    box-shadow: 0 2px 12px -3px rgba(79, 117, 255, 0.40);
   }
   .btn-primary:hover:not(:disabled) {
-    background: linear-gradient(135deg, #8DCFE0 0%, #6BCAE0 100%);
-    box-shadow: 0 6px 22px -4px rgba(126, 196, 212, 0.48);
+    background: #3A5BE8;
+    box-shadow: 0 4px 16px -3px rgba(79, 117, 255, 0.50);
   }
   .btn-ghost {
-    @apply btn text-ink-200 hover:bg-white/[0.045] hover:text-ink-100;
+    @apply btn text-ink-200 hover:bg-white/[0.06] hover:text-ink-100;
   }
   .btn-danger {
-    @apply btn text-rose-200 bg-rose-900/25 hover:bg-rose-900/45;
+    @apply btn text-rose-200 bg-rose-900/30 hover:bg-rose-900/50;
   }
 
   /* ── Inputs ───────────────────────────────────────────────────────── */
   .input {
-    @apply w-full bg-ink-800/70 border border-white/[0.07] rounded-lg px-3 py-2 text-sm text-ink-100
-           placeholder:text-ink-300/55 focus:outline-none focus:ring-2 focus:ring-accent-violet/25
-           focus:border-accent-violet/30 transition-all;
+    @apply w-full bg-ink-800 border border-white/[0.10] rounded-lg px-3 py-2 text-sm text-ink-100
+           placeholder:text-ink-400 focus:outline-none focus:ring-2 focus:ring-accent-violet/30
+           focus:border-accent-violet/50 transition-all;
   }
 
   /* ── Utility ──────────────────────────────────────────────────────── */
@@ -91,34 +82,25 @@
   }
 
   /* ── Mobile overlay sidebars ─────────────────────────────────────── */
-  /* Slide-in panel for channel list / member list on small screens */
   .mobile-sidebar {
-    @apply fixed inset-y-0 left-0 z-40 w-72 flex flex-col bg-ink-900/95 backdrop-blur-xl
-           border-r border-white/[0.06] transform transition-transform duration-200 ease-out;
+    @apply fixed inset-y-0 left-0 z-40 w-72 flex flex-col bg-ink-900
+           border-r border-white/[0.09] transform transition-transform duration-200 ease-out;
   }
-  .mobile-sidebar.open {
-    @apply translate-x-0;
-  }
-  .mobile-sidebar.closed {
-    @apply -translate-x-full;
-  }
+  .mobile-sidebar.open  { @apply translate-x-0; }
+  .mobile-sidebar.closed { @apply -translate-x-full; }
   .mobile-sidebar-right {
-    @apply fixed inset-y-0 right-0 z-40 w-72 flex flex-col bg-ink-900/95 backdrop-blur-xl
-           border-l border-white/[0.06] transform transition-transform duration-200 ease-out;
+    @apply fixed inset-y-0 right-0 z-40 w-72 flex flex-col bg-ink-900
+           border-l border-white/[0.09] transform transition-transform duration-200 ease-out;
   }
-  .mobile-sidebar-right.open {
-    @apply translate-x-0;
-  }
-  .mobile-sidebar-right.closed {
-    @apply translate-x-full;
-  }
-  /* Scrim that closes sidebars on tap — z-[39] sits above content (z-10) but below sidebar (z-40) */
+  .mobile-sidebar-right.open  { @apply translate-x-0; }
+  .mobile-sidebar-right.closed { @apply translate-x-full; }
+  /* Scrim */
   .mobile-scrim {
-    @apply fixed inset-0 bg-black/60 backdrop-blur-[1px];
+    @apply fixed inset-0 bg-black/65;
     z-index: 39;
   }
 
-  /* Founding Supporter toast — slide in from bottom-right */
+  /* Founding Supporter toast */
   .supporter-toast {
     animation: supporter-slide-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
@@ -210,10 +192,10 @@
 @keyframes msg-neon {
   0%, 100% {
     text-shadow:
-      0 0 4px #7EC4D4,
-      0 0 12px #7EC4D4,
-      0 0 24px #7EC4D4;
-    color: #b4f0ff;
+      0 0 4px #4F75FF,
+      0 0 12px #4F75FF,
+      0 0 24px #4F75FF;
+    color: #a5bfff;
   }
   50% {
     text-shadow:

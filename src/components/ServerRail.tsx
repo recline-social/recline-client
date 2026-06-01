@@ -114,14 +114,14 @@ export function ServerRail({
   }
 
   return (
-    <aside className="h-full w-[62px] flex flex-col items-center py-3 gap-1.5 bg-ink-950 border-r border-white/[0.06]">
+    <aside className="h-full w-[62px] flex flex-col items-center py-3 gap-1.5 bg-ink-950 border-r border-white/[0.09]">
 
       {/* Recline logo */}
       <div
         className="h-10 w-10 grid place-items-center rounded-2xl mb-1 shrink-0"
         style={{
-          background: 'linear-gradient(135deg, #7EC4D4 0%, #5BBFD0 100%)',
-          boxShadow: '0 4px 14px -4px rgba(126,196,212,0.4)',
+          background: '#4F75FF',
+          boxShadow: '0 4px 14px -4px rgba(79,117,255,0.45)',
         }}
         title="Recline"
       >

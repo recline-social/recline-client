@@ -607,7 +607,7 @@ export function ServerSettingsDialog({
                                     >
                                       <span
                                         className="h-2.5 w-2.5 rounded-full shrink-0"
-                                        style={{ background: r.color ?? '#6E6080' }}
+                                        style={{ background: r.color ?? '#6C6C7A' }}
                                       />
                                       {r.name}
                                     </button>
@@ -650,14 +650,14 @@ export function ServerSettingsDialog({
                             title={isOwner && m.id !== me.id ? `Remove ${r.name}` : r.name}
                             className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors disabled:cursor-default"
                             style={{
-                              background: r.color ? `${r.color}22` : 'rgba(110,96,128,0.2)',
-                              color: r.color ?? '#B0A5C4',
-                              border: `1px solid ${r.color ? `${r.color}44` : 'rgba(110,96,128,0.3)'}`,
+                              background: r.color ? `${r.color}22` : 'rgba(79,117,255,0.12)',
+                              color: r.color ?? '#C4C4D0',
+                              border: `1px solid ${r.color ? `${r.color}44` : 'rgba(79,117,255,0.22)'}`,
                             }}
                           >
                             <span
                               className="h-1.5 w-1.5 rounded-full shrink-0"
-                              style={{ background: r.color ?? '#6E6080' }}
+                              style={{ background: r.color ?? '#6C6C7A' }}
                             />
                             {r.name}
                             {isOwner && m.id !== me.id && (

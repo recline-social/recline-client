@@ -75,7 +75,7 @@ export function UserProfileCard({ member, me, online, onClose, onDm }: Props) {
     .filter((r) => r.color)
     .sort((a, b) => b.position - a.position)[0] ?? null;
 
-  const accentColor = topColorRole?.color ?? '#7EC4D4';
+  const accentColor = topColorRole?.color ?? '#4F75FF';
   const hasBadges = member.isPlatformOwner || member.isStaff || member.isSupporter;
   const assignedRoles = (member.roles ?? []);
 
@@ -139,7 +139,7 @@ export function UserProfileCard({ member, me, online, onClose, onDm }: Props) {
           {/* Name */}
           <div
             className="mt-3 text-[16px] font-semibold leading-tight"
-            style={{ color: topColorRole?.color ?? '#EDE8F4' }}
+            style={{ color: topColorRole?.color ?? '#F2F2F6' }}
           >
             {member.displayName}
           </div>
