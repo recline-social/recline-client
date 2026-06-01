@@ -336,9 +336,9 @@ export function ServerSettingsDialog({
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) { reset(); onClose(); } }}
     >
-      <div className="panel w-[560px] max-h-[80vh] flex flex-col rounded-2xl shadow-2xl">
+      <div className="panel w-full max-w-[600px] mx-4 max-h-[88vh] flex flex-col rounded-2xl shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 pt-5 pb-4 border-b border-white/5">
+        <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-white/5 shrink-0">
           <div>
             <div className="font-semibold text-sm">{server.name}</div>
             <div className="text-[11px] text-ink-300">Space Settings</div>
@@ -353,13 +353,13 @@ export function ServerSettingsDialog({
           </button>
         </div>
 
-        {/* Tab bar */}
-        <div className="flex gap-1 px-5 pt-3 border-b border-white/5 pb-0">
+        {/* Tab bar — horizontally scrollable so it never bleeds out of the modal */}
+        <div className="flex gap-0.5 px-4 pt-2 border-b border-white/5 pb-0 overflow-x-auto shrink-0 scrollbar-none">
           {tabs.map((t) => (
             <button
               key={t.id}
               onClick={() => { setErr(''); setTab(t.id); }}
-              className={`px-3 py-1.5 text-[12px] font-medium rounded-t-md transition-colors border-b-2 -mb-px
+              className={`shrink-0 px-2.5 py-1.5 text-[11.5px] font-medium rounded-t-md transition-colors border-b-2 -mb-px whitespace-nowrap
                 ${tab === t.id
                   ? 'text-white border-accent-violet'
                   : 'text-ink-300 border-transparent hover:text-ink-100'
@@ -1459,13 +1459,13 @@ function InvitesTab({ server }: { server: ServerSummary }) {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-[10px] font-semibold text-ink-400 uppercase tracking-wider mb-1">
-                  Custom slug (optional)
+                  Custom slug <span className="text-ink-600 normal-case font-normal">(1 per server)</span>
                 </label>
                 <input
                   type="text"
                   value={newCode}
                   onChange={(e) => setNewCode(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
-                  placeholder="my-server"
+                  placeholder="leave blank for random"
                   maxLength={32}
                   className="input-field text-[12px] w-full"
                 />
@@ -1581,6 +1581,9 @@ function InvitesTab({ server }: { server: ServerSummary }) {
 
                       {/* Meta pills */}
                       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                        {link.isCustom && (
+                          <span className="px-1.5 py-0.5 rounded bg-accent-violet/15 text-accent-violet">vanity</span>
+                        )}
                         {link.label && (
                           <span className="px-1.5 py-0.5 rounded bg-white/[0.06] text-ink-300">{link.label}</span>
                         )}

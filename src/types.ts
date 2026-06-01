@@ -64,6 +64,7 @@ export type InviteLink = {
   uses: number;
   allowHistory: boolean;
   isActive: boolean;
+  isCustom: boolean;
   createdBy: string;
 };
 
