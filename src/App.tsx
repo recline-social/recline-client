@@ -1144,8 +1144,15 @@ export default function App() {
         setRolesByServer((prev) => ({ ...prev, [activeServerId]: r.roles }));
       }).catch(() => {});
     }
-    if (!keysReady[activeServerId] && !getCachedKey(activeServerId)) {
-      setUnlockTarget(activeServerId);
+    if (!keysReady[activeServerId]) {
+      if (getCachedKey(activeServerId)) {
+        // Key is already cached (entered in a previous render/session restore)
+        // but keysReady wasn't set — sync it now so encrypted=true and the
+        // full UI (reactions, ✦ spark button, reply) renders correctly.
+        setKeysReady((prev) => ({ ...prev, [activeServerId]: true }));
+      } else {
+        setUnlockTarget(activeServerId);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeServerId]);
