@@ -45,6 +45,7 @@ import {
   loadDmKeyHistory,
 } from './lib/crypto';
 import { CallManager, type PeerSnapshot } from './lib/webrtc';
+import { playCallSound } from './lib/callSounds';
 import { VoiceBar } from './components/VoiceBar';
 import { FeedbackButton } from './components/FeedbackButton';
 import { UserProfileCard } from './components/UserProfileCard';
@@ -60,7 +61,7 @@ import {
 // ── Persistent audio: keeps remote streams audible when CallView is not mounted ─
 const MSG_PAGE = 50; // messages per pagination page
 
-const AudioTrack: FC<{ stream: MediaStream }> = ({ stream }) => {
+const AudioTrack: FC<{ stream: MediaStream; deafened?: boolean }> = ({ stream, deafened = false }) => {
   const ref = useRef<HTMLAudioElement>(null);
   useEffect(() => {
     const el = ref.current;
@@ -73,6 +74,11 @@ const AudioTrack: FC<{ stream: MediaStream }> = ({ stream }) => {
       el.srcObject = null;
     };
   }, [stream]);
+  // React's `muted` attribute doesn't reflect imperatively after mount in all
+  // environments — update via the DOM property directly.
+  useEffect(() => {
+    if (ref.current) ref.current.muted = deafened;
+  }, [deafened]);
   return <audio ref={ref} autoPlay playsInline style={{ display: 'none' }} />;
 };
 import type {
@@ -351,6 +357,9 @@ export default function App() {
   // mic state lifted here so VoiceBar (shown in text channels) can control it
   // and it persists across channel navigation while a call is active.
   const [micOn, setMicOn] = useState(true);
+  const [deafOn, setDeafOn] = useState(false);
+  // Tracks the previous set of peer socket IDs so onPeers can diff for join/leave sounds.
+  const prevPeerSocketIds = useRef<Set<string>>(new Set());
 
   // browser notification permission (requested once after login)
   const notifPermRef = useRef<NotificationPermission>('default');
@@ -1043,7 +1052,17 @@ export default function App() {
     s.on('message:sparked', onMessageSparked);
 
     callManagerRef.current = new CallManager(s, {
-      onPeers: setCallPeers,
+      onPeers: (peers) => {
+        const nextIds = new Set(peers.map((p) => p.socketId));
+        for (const id of nextIds) {
+          if (!prevPeerSocketIds.current.has(id)) playCallSound('join_call');
+        }
+        for (const id of prevPeerSocketIds.current) {
+          if (!nextIds.has(id)) playCallSound('leave_call');
+        }
+        prevPeerSocketIds.current = nextIds;
+        setCallPeers(peers);
+      },
       onLocalStream: setLocalStream,
       onLocalScreen: setLocalScreen,
       onCallEnded: () => { setInCall(false); setMicOn(true); }, // #9
@@ -1899,9 +1918,12 @@ export default function App() {
   }
 
   function handleLeaveCall() {
+    playCallSound('leave_call');
     callManagerRef.current?.leave();
     setInCall(false);
     setMicOn(true);
+    setDeafOn(false);
+    prevPeerSocketIds.current = new Set();
   }
 
   function returnToCall() {
@@ -1935,6 +1957,8 @@ export default function App() {
     setKeysReady({});
     setInCall(false);
     setMicOn(true);
+    setDeafOn(false);
+    prevPeerSocketIds.current = new Set();
     setDms([]);
     setActiveDmId(null);
     setDmMessages({});
@@ -2003,7 +2027,7 @@ export default function App() {
         these <audio> elements handle playback. */}
     {callPeers.flatMap((peer) =>
       peer.streams.map((rs) => (
-        <AudioTrack key={`${peer.socketId}:${rs.streamId}`} stream={rs.stream} />
+        <AudioTrack key={`${peer.socketId}:${rs.streamId}`} stream={rs.stream} deafened={deafOn} />
       ))
     )}
 
@@ -2164,7 +2188,10 @@ export default function App() {
                     onToggleMic={() => {
                       const next = callManagerRef.current?.toggleMic(!micOn) ?? micOn;
                       setMicOn(next);
+                      playCallSound(next ? 'unmute' : 'mute');
                     }}
+                    deafOn={deafOn}
+                    onToggleDeafen={setDeafOn}
                     onLeave={handleLeaveCall}
                     onReturn={returnToCall}
                   />
@@ -2215,11 +2242,13 @@ export default function App() {
                 inCall={inCall}
                 micOn={micOn}
                 onToggleMic={setMicOn}
-                onJoinSuccess={() => setInCall(true)}
+                onJoinSuccess={() => { setInCall(true); playCallSound('join_call'); }}
                 onLeave={handleLeaveCall}
                 localStream={localStream}
                 localScreen={localScreen}
                 peers={callPeers}
+                deafOn={deafOn}
+                onToggleDeafen={setDeafOn}
                 onOpenSidebar={() => setMobileSidebarOpen(true)}
               />
             )
