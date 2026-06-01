@@ -111,29 +111,37 @@ function SparkPickerPortal({
       {/* Header */}
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
         <span style={{ fontSize:12, fontWeight:700, color:'rgba(255,255,255,0.7)' }}>✦ Spark this message</span>
-        {sparksBalance !== undefined && (
-          <span style={{ fontSize:11, color:'#fbbf24', fontWeight:600 }}>{sparksBalance} ✦</span>
-        )}
+        <span style={{ fontSize:11, color:'#fbbf24', fontWeight:600 }}>
+          {sparksBalance ?? 0} ✦
+        </span>
       </div>
 
-      {/* Out-of-sparks banner */}
-      {sparksBalance !== undefined && sparksBalance < Math.min(...SPARK_QUICK_AMOUNTS) && (
+      {/* Zero / insufficient balance — fullwidth card, can't miss it */}
+      {(sparksBalance === undefined || sparksBalance < Math.min(...SPARK_QUICK_AMOUNTS)) && (
         <div style={{
-          marginBottom: 10, padding: '8px 10px', borderRadius: 10,
-          background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.15)',
-          fontSize: 11, color: 'rgba(255,255,255,0.55)', lineHeight: 1.4, textAlign: 'center',
+          marginBottom: 10, padding: '12px 14px', borderRadius: 12,
+          background: 'rgba(251,191,36,0.10)', border: '1.5px solid rgba(251,191,36,0.30)',
+          textAlign: 'center',
         }}>
-          Not enough Sparks.{' '}
-          <span
-            style={{ color: '#fbbf24', cursor: 'pointer', textDecoration: 'underline' }}
+          <div style={{ fontSize:13, fontWeight:700, color:'#fbbf24', marginBottom:4 }}>
+            You have {sparksBalance ?? 0} Sparks
+          </div>
+          <div style={{ fontSize:11, color:'rgba(255,255,255,0.55)', marginBottom:10, lineHeight:1.5 }}>
+            Claim your daily reward or buy a pack to send Sparks.
+          </div>
+          <button
+            style={{
+              width:'100%', padding:'8px 0', borderRadius:10, border:'none', cursor:'pointer',
+              background:'linear-gradient(135deg,rgba(251,191,36,0.28),rgba(245,158,11,0.18))',
+              color:'#fbbf24', fontSize:12, fontWeight:700, fontFamily:'inherit',
+            }}
             onClick={() => {
               onClose();
-              // open profile dialog sparks tab — dispatch a custom event the app listens for
               window.dispatchEvent(new CustomEvent('recline:open-sparks'));
             }}
           >
-            Get more ✦
-          </span>
+            Get Sparks →
+          </button>
         </div>
       )}
 
@@ -563,8 +571,8 @@ export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, 
             <div ref={sparkRef}>
               <button
                 onClick={() => {
+                  console.log('[spark:✦] clicked, sparkOpen=', sparkOpen, 'sparksBalance=', sparksBalance);
                   if (!sparkOpen) {
-                    // Force a layout read so portal knows where to place itself
                     setSparkOpen(true);
                   } else {
                     setSparkOpen(false);
