@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Avatar } from './Avatar';
 import { MarkdownContent } from './MarkdownContent';
@@ -60,13 +60,31 @@ function SparkPickerPortal({
   error?: string | null;
 }) {
   const popRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ top: 0, right: 0 });
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
 
-  // Calculate position from anchor button
-  useEffect(() => {
+  // Calculate position from anchor button.
+  // Uses top/right (not bottom) so the picker stays inside the viewport regardless
+  // of where the message is vertically — the old bottom formula made the picker
+  // render above the viewport for messages near the top of the chat panel.
+  useLayoutEffect(() => {
     if (!anchorRef.current) return;
-    const r = anchorRef.current.getBoundingClientRect();
-    setPos({ top: r.top - 8, right: window.innerWidth - r.right });
+    const r   = anchorRef.current.getBoundingClientRect();
+    const VH  = window.innerHeight;
+    const VW  = window.innerWidth;
+    const PH  = 340; // generous picker height estimate
+    const PW  = 220;
+    const GAP = 6;
+
+    // Prefer above the button; flip below if not enough room
+    let top = r.top - GAP - PH;
+    if (top < GAP) top = r.bottom + GAP;          // not enough room above → below
+    top = Math.max(GAP, Math.min(top, VH - PH - GAP)); // clamp within viewport
+
+    // Align right edge of picker with right edge of button
+    let right = VW - r.right;
+    right = Math.max(GAP, Math.min(right, VW - PW - GAP)); // clamp within viewport
+
+    setPos({ top, right });
   }, [anchorRef]);
 
   // Close on outside click
@@ -92,12 +110,15 @@ function SparkPickerPortal({
   const customValid = !Number.isNaN(customVal) && customVal >= 1 && customVal <= 500;
   const customAffordable = sparksBalance === undefined || customVal <= sparksBalance;
 
+  // Don't render until position is calculated — avoids flash at (0,0)
+  if (!pos) return null;
+
   return (
     <div
       ref={popRef}
       style={{
         position: 'fixed',
-        bottom: `calc(100vh - ${pos.top}px)`,
+        top: `${pos.top}px`,
         right: `${pos.right}px`,
         zIndex: 9999,
         width: 220,
