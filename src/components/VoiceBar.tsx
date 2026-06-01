@@ -24,12 +24,15 @@ export function VoiceBar({ channelName, micOn, onToggleMic, deafOn, onToggleDeaf
 
       <div className="flex-1" />
 
-      {/* mic toggle */}
+      {/* mic toggle — disabled while deafened */}
       <button
-        onClick={onToggleMic}
-        title={micOn ? 'Mute' : 'Unmute'}
+        onClick={deafOn ? undefined : onToggleMic}
+        disabled={deafOn}
+        title={deafOn ? 'Deafened' : micOn ? 'Mute' : 'Unmute'}
         className={`h-9 w-9 sm:h-7 sm:w-7 rounded-lg grid place-items-center transition-colors border ${
-          micOn
+          deafOn
+            ? 'bg-ink-800/30 border-white/5 text-ink-600 cursor-not-allowed'
+            : micOn
             ? 'bg-ink-700/60 border-white/[0.08] text-ink-300 hover:text-ink-100'
             : 'bg-rose-500/15 border-rose-500/20 text-rose-300'
         }`}

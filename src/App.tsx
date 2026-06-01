@@ -1926,6 +1926,16 @@ export default function App() {
     prevPeerSocketIds.current = new Set();
   }
 
+  function handleToggleDeafen(v: boolean) {
+    setDeafOn(v);
+    if (v) {
+      // Deafening: stop transmitting audio immediately. Mic stays off after
+      // undeafen — user must manually unmute, same as Discord behaviour.
+      callManagerRef.current?.toggleMic(false);
+      setMicOn(false);
+    }
+  }
+
   function returnToCall() {
     const channelId = callManagerRef.current?.currentChannel();
     if (!channelId) return;
@@ -2191,7 +2201,7 @@ export default function App() {
                       playCallSound(next ? 'unmute' : 'mute');
                     }}
                     deafOn={deafOn}
-                    onToggleDeafen={setDeafOn}
+                    onToggleDeafen={handleToggleDeafen}
                     onLeave={handleLeaveCall}
                     onReturn={returnToCall}
                   />
@@ -2248,7 +2258,7 @@ export default function App() {
                 localScreen={localScreen}
                 peers={callPeers}
                 deafOn={deafOn}
-                onToggleDeafen={setDeafOn}
+                onToggleDeafen={handleToggleDeafen}
                 onOpenSidebar={() => setMobileSidebarOpen(true)}
               />
             )

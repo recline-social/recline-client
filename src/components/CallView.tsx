@@ -364,12 +364,13 @@ export function CallView({
           <div className="panel-inner rounded-2xl px-4 py-3 flex items-center justify-center gap-3">
             <ControlButton
               active={micOn}
+              disabled={deafOn}
               onClick={() => {
                 const next = manager.toggleMic(!micOn);
                 onToggleMic(next);
                 playCallSound(next ? 'unmute' : 'mute');
               }}
-              label={micOn ? 'Mute' : 'Unmute'}
+              label={deafOn ? 'Deafened' : micOn ? 'Mute' : 'Unmute'}
               variant={micOn ? 'on' : 'muted'}
               icon={
                 micOn ? (
@@ -659,22 +660,27 @@ function ControlButton({
   label,
   icon,
   variant = 'on',
+  disabled = false,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
   icon: React.ReactNode;
   variant?: 'on' | 'muted';
+  disabled?: boolean;
 }) {
-  const cls = active
+  const cls = disabled
+    ? 'bg-ink-800/30 border-white/5 text-ink-600 cursor-not-allowed'
+    : active
     ? 'bg-accent-violet/20 border-accent-violet/30 text-accent-violet'
     : variant === 'muted'
     ? 'bg-rose-500/15 border-rose-500/20 text-rose-300'
     : 'bg-ink-800/70 border-white/5 text-ink-200 hover:text-ink-100';
   return (
     <button
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
       title={label}
+      disabled={disabled}
       className={`h-11 w-11 rounded-xl grid place-items-center transition-colors border ${cls}`}
     >
       {icon}
