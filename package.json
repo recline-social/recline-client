@@ -13,9 +13,15 @@
     "tauri:dev": "tauri dev",
     "tauri:dev:remote": "tauri dev --config ./src-tauri/tauri.remote.conf.json",
     "tauri:build": "tauri build",
-    "tauri:icon": "tauri icon"
+    "tauri:icon": "tauri icon",
+    "cap:sync": "npx cap sync",
+    "cap:open:android": "npx cap open android",
+    "build:android": "npm run build && npx cap sync"
   },
   "dependencies": {
+    "@capacitor/android": "^8.3.4",
+    "@capacitor/cli": "^8.3.4",
+    "@capacitor/core": "^8.3.4",
     "@datadog/browser-rum": "^7.1.0",
     "@tauri-apps/api": "^2.1.1",
     "qrcode.react": "^4.2.0",

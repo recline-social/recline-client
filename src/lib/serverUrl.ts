@@ -12,7 +12,12 @@ export function isDesktop(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+export function isCapacitor(): boolean {
+  return typeof window !== 'undefined' && typeof (window as any).Capacitor !== 'undefined';
+}
+
 export function getServerUrl(): string {
+  if (isCapacitor()) return DEFAULT_SERVER_URL;
   if (!isDesktop()) return '';
   return (localStorage.getItem(KEY) ?? '').replace(/\/$/, '');
 }

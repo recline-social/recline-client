@@ -115,6 +115,27 @@ function SparkPickerPortal({
         )}
       </div>
 
+      {/* Out-of-sparks banner */}
+      {sparksBalance !== undefined && sparksBalance < Math.min(...SPARK_QUICK_AMOUNTS) && (
+        <div style={{
+          marginBottom: 10, padding: '8px 10px', borderRadius: 10,
+          background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.15)',
+          fontSize: 11, color: 'rgba(255,255,255,0.55)', lineHeight: 1.4, textAlign: 'center',
+        }}>
+          Not enough Sparks.{' '}
+          <span
+            style={{ color: '#fbbf24', cursor: 'pointer', textDecoration: 'underline' }}
+            onClick={() => {
+              onClose();
+              // open profile dialog sparks tab — dispatch a custom event the app listens for
+              window.dispatchEvent(new CustomEvent('recline:open-sparks'));
+            }}
+          >
+            Get more ✦
+          </span>
+        </div>
+      )}
+
       {/* Quick amounts */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6, marginBottom:10 }}>
         {SPARK_QUICK_AMOUNTS.map((amt) => {

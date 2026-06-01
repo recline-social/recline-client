@@ -21,6 +21,7 @@ type Props = {
   isSupporter?: boolean;
   sparksBalance?: number;
   onSparksUpdate?: (balance: number) => void;
+  initialTab?: Tab;
 };
 
 type Tab = 'profile' | 'security' | 'notifications' | 'sparks';
@@ -926,20 +927,37 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
   const [claimMsg, setClaimMsg] = useState<{ reward: number; day: number } | null>(null);
   const [txns, setTxns]         = useState<{ delta: number; reason: string; createdAt: number }[]>([]);
 
+  // Buy Sparks state
+  type SparkPackItem = { id: string; name: string; sparkCount: number; priceCents: number; stripePriceId: string | null; active: boolean };
+  const [packsList, setPacksList]     = useState<SparkPackItem[]>([]);
+  const [buyingPackId, setBuyingPackId] = useState<string | null>(null);
+
   useEffect(() => {
     let live = true;
-    Promise.all([api.sparks.streak(), api.sparks.transactions(10)])
-      .then(([s, t]) => {
+    Promise.all([api.sparks.streak(), api.sparks.transactions(10), api.sparks.packs()])
+      .then(([s, t, p]) => {
         if (!live) return;
         setStreak(s.currentStreak);
         setClaimed(s.alreadyClaimedToday);
         setWeekMult(s.weekMultiplier ?? 0);
         setTxns(t.transactions ?? []);
+        setPacksList(p.packs ?? []);
       })
       .catch(() => {})
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, []);
+
+  async function handleBuyPack(packId: string) {
+    if (buyingPackId) return;
+    setBuyingPackId(packId);
+    try {
+      const r = await api.sparks.checkout(packId);
+      if (r.url) window.location.href = r.url;
+    } catch { /* silent */ } finally {
+      setBuyingPackId(null);
+    }
+  }
 
   async function handleClaim() {
     if (claiming || claimed) return;
@@ -1087,6 +1105,49 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
         </div>
       </div>
 
+      {/* Buy Sparks */}
+      {packsList.length > 0 && (
+        <div>
+          <div className="text-[11px] font-semibold text-ink-400 uppercase tracking-wide mb-2">Buy Sparks</div>
+          <div className="grid grid-cols-2 gap-2">
+            {packsList.map((pack) => (
+              <div
+                key={pack.id}
+                className="rounded-2xl p-3 flex flex-col gap-2"
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(251,191,36,0.2)',
+                }}
+              >
+                <div>
+                  <div className="text-[12px] font-semibold text-ink-100">{pack.name}</div>
+                  <div
+                    className="text-[20px] font-bold mt-0.5"
+                    style={{ background: 'linear-gradient(90deg,#fbbf24,#f59e0b)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}
+                  >
+                    {pack.sparkCount.toLocaleString()} ✦
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleBuyPack(pack.id)}
+                  disabled={buyingPackId !== null}
+                  className="w-full py-1.5 rounded-xl text-[12px] font-bold transition-all disabled:opacity-50"
+                  style={{
+                    background: 'linear-gradient(135deg,rgba(251,191,36,0.28),rgba(245,158,11,0.18))',
+                    border: '1px solid rgba(251,191,36,0.35)',
+                    color: '#fbbf24',
+                  }}
+                >
+                  {buyingPackId === pack.id
+                    ? 'Redirecting…'
+                    : `$${(pack.priceCents / 100).toFixed(2)}`}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Recent transactions */}
       {txns.length > 0 && (
         <div>
@@ -1108,12 +1169,12 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
 }
 
 // ── Shell ─────────────────────────────────────────────────────────────────────
-export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, isSupporter, sparksBalance, onSparksUpdate }: Props) {
+export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, isSupporter, sparksBalance, onSparksUpdate, initialTab }: Props) {
   const [tab, setTab] = useState<Tab>('profile');
 
   useEffect(() => {
-    if (open) setTab('profile');
-  }, [open]);
+    if (open) setTab(initialTab ?? 'profile');
+  }, [open, initialTab]);
 
   return (
     <Modal

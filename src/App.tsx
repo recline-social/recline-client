@@ -248,6 +248,7 @@ export default function App() {
   const [createOpen, setCreateOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [profileInitialTab, setProfileInitialTab] = useState<'profile' | 'security' | 'notifications' | 'sparks'>('profile');
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // view mode: servers or DMs
@@ -378,6 +379,16 @@ export default function App() {
     };
     document.addEventListener('visibilitychange', handler);
     return () => document.removeEventListener('visibilitychange', handler);
+  }, []);
+
+  // "Get more Sparks" link from the spark picker opens ProfileDialog on sparks tab
+  useEffect(() => {
+    const handler = () => {
+      setProfileInitialTab('sparks');
+      setProfileOpen(true);
+    };
+    window.addEventListener('recline:open-sparks', handler);
+    return () => window.removeEventListener('recline:open-sparks', handler);
   }, []);
 
   // Strip ?supporter=1 from URL immediately on mount and flag a pending check.
@@ -2171,8 +2182,9 @@ export default function App() {
       />
       <ProfileDialog
         open={profileOpen}
-        onClose={() => setProfileOpen(false)}
+        onClose={() => { setProfileOpen(false); setProfileInitialTab('profile'); }}
         me={user}
+        initialTab={profileInitialTab}
         onUpdated={(u) => setUser(u)}
         onRotateKey={handleRotateKey}
         isSupporter={isSupporter}

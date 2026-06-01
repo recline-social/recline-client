@@ -543,6 +543,13 @@ export const api = {
         weekMultiplier: number;
         alreadyClaimedToday: boolean;
       }>('/api/sparks/streak'),
+
+    /** Create a Stripe Checkout Session for a spark pack purchase. Returns the hosted checkout URL. */
+    checkout: (packId: string) =>
+      request<{ url: string }>('/api/sparks/checkout', {
+        method: 'POST',
+        body: JSON.stringify({ packId }),
+      }),
   },
 
   broadcasts: {
