@@ -580,9 +580,9 @@ export function ServerSettingsDialog({
                           @{m.username} · {m.role}
                         </div>
                       </div>
-                      {isOwner && m.id !== me.id && (
+                      {isOwner && (
                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {/* Assign role button */}
+                          {/* Assign role — available for ALL members including the owner's own row */}
                           {assignableRoles.length > 0 && (
                             <div className="relative">
                               <button
@@ -616,26 +616,31 @@ export function ServerSettingsDialog({
                               )}
                             </div>
                           )}
-                          <button
-                            onClick={async () => {
-                              setBusy(true);
-                              try { await onKick(m.id); } catch (ex: any) { setErr(ex.message ?? 'kick failed'); } finally { setBusy(false); }
-                            }}
-                            disabled={busy}
-                            className="text-[11px] text-rose-400 hover:text-rose-300 transition-colors px-2 py-1 rounded hover:bg-rose-500/10 disabled:opacity-40"
-                          >
-                            Kick
-                          </button>
-                          <button
-                            onClick={async () => {
-                              setBusy(true);
-                              try { await onBan(m.id, banReasonInputs[m.id]?.trim() || undefined); } catch (ex: any) { setErr(ex.message ?? 'ban failed'); } finally { setBusy(false); }
-                            }}
-                            disabled={busy}
-                            className="text-[11px] text-amber-400 hover:text-amber-300 transition-colors px-2 py-1 rounded hover:bg-amber-500/10 disabled:opacity-40"
-                          >
-                            Ban
-                          </button>
+                          {/* Kick / ban — other members only, never self */}
+                          {m.id !== me.id && (
+                            <>
+                              <button
+                                onClick={async () => {
+                                  setBusy(true);
+                                  try { await onKick(m.id); } catch (ex: any) { setErr(ex.message ?? 'kick failed'); } finally { setBusy(false); }
+                                }}
+                                disabled={busy}
+                                className="text-[11px] text-rose-400 hover:text-rose-300 transition-colors px-2 py-1 rounded hover:bg-rose-500/10 disabled:opacity-40"
+                              >
+                                Kick
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  setBusy(true);
+                                  try { await onBan(m.id, banReasonInputs[m.id]?.trim() || undefined); } catch (ex: any) { setErr(ex.message ?? 'ban failed'); } finally { setBusy(false); }
+                                }}
+                                disabled={busy}
+                                className="text-[11px] text-amber-400 hover:text-amber-300 transition-colors px-2 py-1 rounded hover:bg-amber-500/10 disabled:opacity-40"
+                              >
+                                Ban
+                              </button>
+                            </>
+                          )}
                         </div>
                       )}
                     </div>
@@ -645,9 +650,9 @@ export function ServerSettingsDialog({
                         {mRoles.map((r) => (
                           <button
                             key={r.id}
-                            onClick={() => isOwner && m.id !== me.id && handleRemoveRole(m.id, r.id)}
-                            disabled={!!roleActionLoading[`${m.id}:${r.id}`] || !isOwner || m.id === me.id}
-                            title={isOwner && m.id !== me.id ? `Remove ${r.name}` : r.name}
+                            onClick={() => isOwner && handleRemoveRole(m.id, r.id)}
+                            disabled={!!roleActionLoading[`${m.id}:${r.id}`] || !isOwner}
+                            title={isOwner ? `Remove ${r.name}` : r.name}
                             className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors disabled:cursor-default"
                             style={{
                               background: r.color ? `${r.color}22` : 'rgba(79,117,255,0.12)',
@@ -660,7 +665,7 @@ export function ServerSettingsDialog({
                               style={{ background: r.color ?? '#6C6C7A' }}
                             />
                             {r.name}
-                            {isOwner && m.id !== me.id && (
+                            {isOwner && (
                               <span className="opacity-50 ml-0.5">×</span>
                             )}
                           </button>
