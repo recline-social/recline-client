@@ -10,6 +10,7 @@ import { Welcome } from './components/Welcome';
 import { EmptyHome } from './components/EmptyHome';
 import { CreateServerDialog, JoinServerDialog, UnlockDialog } from './components/ServerDialogs';
 import { ProfileDialog } from './components/ProfileDialog';
+import { InviteJoinModal } from './components/InviteJoinModal';
 import { ServerSettingsDialog } from './components/ServerSettingsDialog';
 import { DmList } from './components/DmList';
 import { DmView } from './components/DmView';
@@ -243,6 +244,18 @@ export default function App() {
   // encryption key readiness per server
   const [keysReady, setKeysReady] = useState<Record<string, boolean>>({});
   const [unlockTarget, setUnlockTarget] = useState<string | null>(null);
+
+  // Vanity invite link: code extracted from /invite/<code> URL on load.
+  // Persists through the auth flow so the modal fires after login if needed.
+  const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(() => {
+    const m = window.location.pathname.match(/^\/invite\/([a-z0-9][a-z0-9-]{0,30}[a-z0-9]|[a-z0-9]{1,32})$/i);
+    if (m) {
+      // Clean the URL immediately so refreshing doesn't re-trigger the flow
+      window.history.replaceState({}, '', '/');
+      return m[1].toLowerCase();
+    }
+    return null;
+  });
 
   // dialogs
   const [createOpen, setCreateOpen] = useState(false);
@@ -2210,6 +2223,26 @@ export default function App() {
         />
       ) : (
         <Welcome onCreate={() => setCreateOpen(true)} onJoin={() => setJoinOpen(true)} />
+      )}
+
+      {/* Vanity invite join modal — shown when user arrives via /invite/<code> */}
+      {user && pendingInviteCode && (
+        <InviteJoinModal
+          code={pendingInviteCode}
+          onClose={() => setPendingInviteCode(null)}
+          onJoined={async (server, channels, passphrase) => {
+            setPendingInviteCode(null);
+            // Pre-populate channels so the UI is ready immediately
+            setChannelsByServer((prev) => ({ ...prev, [server.id]: channels }));
+            setServers((prev) => (prev.find((s) => s.id === server.id) ? prev : [...prev, server]));
+            // Derive + cache AES key from the passphrase the user just typed
+            const key = await deriveServerKey(passphrase, server.id, server.kdf_salt ?? null);
+            cacheKey(server.id, key);
+            setKeysReady((prev) => ({ ...prev, [server.id]: true }));
+            setActiveServerId(server.id);
+            socketRef.current?.emit('server:join', server.id);
+          }}
+        />
       )}
 
       <CreateServerDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreate={createServer} />

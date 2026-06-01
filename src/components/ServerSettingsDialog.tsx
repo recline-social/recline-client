@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Member, ServerRole, ServerSummary, User } from '../types';
+import type { InviteLink, Member, ServerRole, ServerSummary, User } from '../types';
 import { api } from '../lib/api';
 import { getServerUrl } from '../lib/serverUrl';
 import { Permissions } from '../lib/permissions';
 
-type Tab = 'general' | 'security' | 'members' | 'roles' | 'bans' | 'reports' | 'danger';
+type Tab = 'general' | 'security' | 'members' | 'roles' | 'bans' | 'reports' | 'invites' | 'danger';
 
 type Report = {
   id: string;
@@ -319,6 +319,7 @@ export function ServerSettingsDialog({
         { id: 'roles', label: 'Roles' },
         { id: 'bans', label: 'Bans' },
         { id: 'reports', label: 'Reports' },
+        { id: 'invites', label: 'Invites' },
         { id: 'danger', label: 'Danger' },
       ]
     : [
@@ -824,6 +825,11 @@ export function ServerSettingsDialog({
             </div>
           )}
 
+          {/* ── Invites ────────────────────────────────────────── */}
+          {tab === 'invites' && isOwner && (
+            <InvitesTab server={server} />
+          )}
+
           {/* ── Danger ─────────────────────────────────────────── */}
           {tab === 'danger' && (
             <div className="space-y-5">
@@ -1312,6 +1318,323 @@ function RolesTab({
             </svg>
           </button>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Invites Tab ───────────────────────────────────────────────────────────────
+function InvitesTab({ server }: { server: ServerSummary }) {
+  const baseUrl = `${window.location.origin}/invite/`;
+
+  const [links, setLinks]               = useState<InviteLink[]>([]);
+  const [loading, setLoading]           = useState(true);
+  const [err, setErr]                   = useState('');
+  const [inviteMode, setInviteMode]     = useState<'any' | 'links_only'>(server.invite_mode ?? 'any');
+  const [modeWorking, setModeWorking]   = useState(false);
+  const [creating, setCreating]         = useState(false);
+  const [copied, setCopied]             = useState<string | null>(null);
+
+  // Create form state
+  const [newCode, setNewCode]           = useState('');
+  const [newLabel, setNewLabel]         = useState('');
+  const [newMaxUses, setNewMaxUses]     = useState('');
+  const [newExpiry, setNewExpiry]       = useState('');
+  const [newHistory, setNewHistory]     = useState(true);
+  const [createErr, setCreateErr]       = useState('');
+  const [showCreate, setShowCreate]     = useState(false);
+
+  useEffect(() => {
+    api.invites.list(server.id)
+      .then((r) => { setLinks(r.links); setLoading(false); })
+      .catch((e: Error) => { setErr(e.message); setLoading(false); });
+  }, [server.id]);
+
+  async function toggleMode() {
+    const next = inviteMode === 'any' ? 'links_only' : 'any';
+    setModeWorking(true);
+    try {
+      await api.invites.setInviteMode(server.id, next);
+      setInviteMode(next);
+    } catch (e: any) { setErr(e.message); }
+    finally { setModeWorking(false); }
+  }
+
+  async function handleCreate() {
+    setCreateErr('');
+    const opts: Parameters<typeof api.invites.create>[1] = {
+      allowHistory: newHistory,
+    };
+    if (newCode.trim()) opts.code = newCode.trim();
+    if (newLabel.trim()) opts.label = newLabel.trim();
+    const mu = parseInt(newMaxUses, 10);
+    if (newMaxUses && !Number.isNaN(mu)) opts.maxUses = mu;
+    if (newExpiry) {
+      const ts = new Date(newExpiry).getTime();
+      if (!Number.isNaN(ts) && ts > Date.now()) opts.expiresAt = ts;
+      else { setCreateErr('Expiry must be a future date'); return; }
+    }
+    setCreating(true);
+    try {
+      const r = await api.invites.create(server.id, opts);
+      setLinks((prev) => [r.link, ...prev]);
+      setNewCode(''); setNewLabel(''); setNewMaxUses(''); setNewExpiry('');
+      setNewHistory(true); setShowCreate(false);
+    } catch (e: any) { setCreateErr(e.message); }
+    finally { setCreating(false); }
+  }
+
+  async function toggleLink(link: InviteLink) {
+    try {
+      await api.invites.update(server.id, link.id, { isActive: !link.isActive });
+      setLinks((prev) => prev.map((l) => l.id === link.id ? { ...l, isActive: !l.isActive } : l));
+    } catch (e: any) { setErr(e.message); }
+  }
+
+  async function deleteLink(linkId: string) {
+    if (!confirm('Delete this invite link? It cannot be undone.')) return;
+    try {
+      await api.invites.delete(server.id, linkId);
+      setLinks((prev) => prev.filter((l) => l.id !== linkId));
+    } catch (e: any) { setErr(e.message); }
+  }
+
+  function copyLink(code: string) {
+    navigator.clipboard.writeText(`${baseUrl}${code}`).then(() => {
+      setCopied(code);
+      setTimeout(() => setCopied(null), 2000);
+    });
+  }
+
+  function fmtExpiry(ts: number | null) {
+    if (!ts) return null;
+    const d = new Date(ts);
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  const isExpired = (link: InviteLink) => !!(link.expiresAt && link.expiresAt < Date.now());
+  const isExhausted = (link: InviteLink) => !!(link.maxUses !== null && link.uses >= link.maxUses);
+
+  return (
+    <div className="space-y-5">
+      {err && <p className="text-rose-400 text-sm">{err}</p>}
+
+      {/* ── Join policy ──────────────────────────────────────────────────── */}
+      <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.07] space-y-2">
+        <p className="text-[13px] font-semibold text-ink-100">Join policy</p>
+        <p className="text-[12px] text-ink-400 leading-snug">
+          {inviteMode === 'any'
+            ? 'Anyone with the server code or an active invite link can join.'
+            : 'Only people with an active invite link can join — the legacy server code is disabled.'}
+        </p>
+        <button
+          onClick={toggleMode}
+          disabled={modeWorking}
+          className="mt-1 btn-secondary text-[12px] px-3 py-1.5 disabled:opacity-50"
+        >
+          {modeWorking
+            ? 'Saving…'
+            : inviteMode === 'any'
+              ? 'Switch to links only'
+              : 'Allow legacy code too'}
+        </button>
+      </div>
+
+      {/* ── Create new link ───────────────────────────────────────────────── */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[13px] font-semibold text-ink-100">Invite links</p>
+          <button
+            onClick={() => { setShowCreate((p) => !p); setCreateErr(''); }}
+            className="btn-primary text-[12px] px-3 py-1.5"
+          >
+            {showCreate ? 'Cancel' : '+ New link'}
+          </button>
+        </div>
+
+        {showCreate && (
+          <div className="mb-4 p-4 rounded-xl border border-white/[0.08] bg-white/[0.02] space-y-3">
+            {createErr && <p className="text-rose-400 text-[12px]">{createErr}</p>}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] font-semibold text-ink-400 uppercase tracking-wider mb-1">
+                  Custom slug (optional)
+                </label>
+                <input
+                  type="text"
+                  value={newCode}
+                  onChange={(e) => setNewCode(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+                  placeholder="my-server"
+                  maxLength={32}
+                  className="input-field text-[12px] w-full"
+                />
+                <p className="text-[10px] text-ink-500 mt-1">{baseUrl}<span className="text-ink-300">{newCode || '<random>'}</span></p>
+              </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-ink-400 uppercase tracking-wider mb-1">
+                  Label (optional)
+                </label>
+                <input
+                  type="text"
+                  value={newLabel}
+                  onChange={(e) => setNewLabel(e.target.value)}
+                  placeholder="e.g. Discord import"
+                  maxLength={64}
+                  className="input-field text-[12px] w-full"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-ink-400 uppercase tracking-wider mb-1">
+                  Max uses (optional)
+                </label>
+                <input
+                  type="number"
+                  value={newMaxUses}
+                  onChange={(e) => setNewMaxUses(e.target.value)}
+                  placeholder="unlimited"
+                  min={1}
+                  max={100000}
+                  className="input-field text-[12px] w-full"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-ink-400 uppercase tracking-wider mb-1">
+                  Expires (optional)
+                </label>
+                <input
+                  type="datetime-local"
+                  value={newExpiry}
+                  onChange={(e) => setNewExpiry(e.target.value)}
+                  className="input-field text-[12px] w-full"
+                />
+              </div>
+            </div>
+
+            {/* History toggle */}
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={newHistory}
+                onClick={() => setNewHistory((p) => !p)}
+                className={`relative w-9 h-5 rounded-full transition-colors ${newHistory ? 'bg-accent-violet' : 'bg-ink-700'}`}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${newHistory ? 'translate-x-4' : 'translate-x-0'}`} />
+              </button>
+              <span className="text-[12px] text-ink-300">
+                {newHistory ? 'New members can see message history' : 'New members see only new messages'}
+              </span>
+            </label>
+
+            <button
+              onClick={handleCreate}
+              disabled={creating}
+              className="btn-primary text-[12px] px-4 py-2 disabled:opacity-50"
+            >
+              {creating ? 'Creating…' : 'Create invite link'}
+            </button>
+          </div>
+        )}
+
+        {/* Link list */}
+        {loading ? (
+          <p className="text-ink-400 text-sm text-center py-6">Loading…</p>
+        ) : links.length === 0 ? (
+          <p className="text-ink-400 text-sm text-center py-6">No invite links yet — create one above.</p>
+        ) : (
+          <div className="space-y-2">
+            {links.map((link) => {
+              const expired   = isExpired(link);
+              const exhausted = isExhausted(link);
+              const dead      = !link.isActive || expired || exhausted;
+              return (
+                <div
+                  key={link.id}
+                  className={`p-3 rounded-xl border transition-colors ${dead ? 'border-white/[0.05] bg-white/[0.01] opacity-60' : 'border-white/[0.08] bg-white/[0.03]'}`}
+                >
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1 min-w-0">
+                      {/* Code + copy */}
+                      <div className="flex items-center gap-2 mb-1">
+                        <button
+                          onClick={() => copyLink(link.code)}
+                          className="font-mono text-[13px] text-accent-violet hover:text-blue-300 transition-colors truncate"
+                          title="Click to copy"
+                        >
+                          {link.code}
+                        </button>
+                        {copied === link.code ? (
+                          <span className="text-[10px] text-emerald-400 font-semibold">Copied!</span>
+                        ) : (
+                          <button
+                            onClick={() => copyLink(link.code)}
+                            className="text-ink-500 hover:text-ink-300 transition-colors"
+                            title="Copy link"
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Meta pills */}
+                      <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                        {link.label && (
+                          <span className="px-1.5 py-0.5 rounded bg-white/[0.06] text-ink-300">{link.label}</span>
+                        )}
+                        <span className="px-1.5 py-0.5 rounded bg-white/[0.06] text-ink-400">
+                          {link.uses}{link.maxUses !== null ? `/${link.maxUses}` : ''} uses
+                        </span>
+                        {link.allowHistory ? (
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">history ✓</span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">no history</span>
+                        )}
+                        {fmtExpiry(link.expiresAt) && (
+                          <span className={`px-1.5 py-0.5 rounded ${expired ? 'bg-rose-500/10 text-rose-400' : 'bg-white/[0.06] text-ink-400'}`}>
+                            {expired ? 'expired' : `expires ${fmtExpiry(link.expiresAt)}`}
+                          </span>
+                        )}
+                        {exhausted && <span className="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400">limit reached</span>}
+                        {!link.isActive && !expired && !exhausted && (
+                          <span className="px-1.5 py-0.5 rounded bg-ink-700 text-ink-400">disabled</span>
+                        )}
+                        <span className="text-ink-500">by {link.createdBy}</span>
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => toggleLink(link)}
+                        title={link.isActive ? 'Disable link' : 'Enable link'}
+                        className={`h-7 w-7 grid place-items-center rounded-md border transition-colors text-[10px] font-bold ${
+                          link.isActive
+                            ? 'border-white/[0.08] text-ink-400 hover:text-rose-300 hover:border-rose-500/30'
+                            : 'border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10'
+                        }`}
+                      >
+                        {link.isActive ? '⏸' : '▶'}
+                      </button>
+                      <button
+                        onClick={() => deleteLink(link.id)}
+                        title="Delete link"
+                        className="h-7 w-7 grid place-items-center rounded-md border border-white/[0.08] text-ink-400 hover:text-rose-300 hover:border-rose-500/30 transition-colors"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                          <path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

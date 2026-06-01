@@ -595,4 +595,68 @@ export const api = {
         { method: 'PATCH', body: JSON.stringify(settings) },
       ),
   },
+
+  invites: {
+    /** Public — no auth needed. Returns server name + invite metadata. */
+    getInfo: (code: string) =>
+      request<import('../types').InviteInfo>(`/api/invite/${encodeURIComponent(code)}`),
+
+    /** Join a server via an invite link. Requires auth + correct passphrase. */
+    join: (code: string, passphrase: string) =>
+      request<{
+        server: {
+          id: string; name: string; ownerId: string; role: string;
+          kdfSalt: string | null; inviteMode: string;
+        };
+        channels: { id: string; name: string; type: string; position: number; topic: string | null }[];
+      }>(`/api/invite/${encodeURIComponent(code)}/join`, {
+        method: 'POST',
+        body: JSON.stringify({ passphrase }),
+      }),
+
+    /** List all invite links for a server (requires MANAGE_SERVER). */
+    list: (serverId: string) =>
+      request<{ links: import('../types').InviteLink[] }>(`/api/servers/${serverId}/invite-links`),
+
+    /** Create a new invite link (requires MANAGE_SERVER). */
+    create: (
+      serverId: string,
+      opts: {
+        code?: string;
+        label?: string;
+        maxUses?: number | null;
+        expiresAt?: number | null;
+        allowHistory?: boolean;
+      },
+    ) =>
+      request<{ link: import('../types').InviteLink }>(
+        `/api/servers/${serverId}/invite-links`,
+        { method: 'POST', body: JSON.stringify(opts) },
+      ),
+
+    /** Update an invite link — toggle active, change label, change maxUses. */
+    update: (
+      serverId: string,
+      linkId: string,
+      patch: { isActive?: boolean; label?: string | null; maxUses?: number | null },
+    ) =>
+      request<{ ok: boolean }>(
+        `/api/servers/${serverId}/invite-links/${linkId}`,
+        { method: 'PATCH', body: JSON.stringify(patch) },
+      ),
+
+    /** Delete / permanently revoke an invite link. */
+    delete: (serverId: string, linkId: string) =>
+      request<{ ok: boolean }>(
+        `/api/servers/${serverId}/invite-links/${linkId}`,
+        { method: 'DELETE' },
+      ),
+
+    /** Set server join policy: 'any' | 'links_only' (owner only). */
+    setInviteMode: (serverId: string, inviteMode: 'any' | 'links_only') =>
+      request<{ ok: boolean }>(
+        `/api/servers/${serverId}/invite-mode`,
+        { method: 'PATCH', body: JSON.stringify({ inviteMode }) },
+      ),
+  },
 };

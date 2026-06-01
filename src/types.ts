@@ -49,6 +49,31 @@ export type ServerSummary = {
   icon_url?: string | null;
   /** User-specific sort position for drag-to-reorder. */
   sort_position?: number;
+  /** 'any' = legacy invite_code + invite_links both work.
+   *  'links_only' = only active invite_links are accepted. */
+  invite_mode?: 'any' | 'links_only';
+};
+
+export type InviteLink = {
+  id: string;
+  code: string;
+  label: string | null;
+  createdAt: number;
+  expiresAt: number | null;
+  maxUses: number | null;
+  uses: number;
+  allowHistory: boolean;
+  isActive: boolean;
+  createdBy: string;
+};
+
+export type InviteInfo = {
+  serverId: string;
+  serverName: string;
+  iconUrl: string | null;
+  label: string | null;
+  allowHistory: boolean;
+  memberCount: number;
 };
 
 export type Channel = {
