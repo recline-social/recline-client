@@ -246,6 +246,36 @@ export default function App() {
   const [keysReady, setKeysReady] = useState<Record<string, boolean>>({});
   const [unlockTarget, setUnlockTarget] = useState<string | null>(null);
 
+  // Panel resize widths — persisted to localStorage
+  const [channelListWidth, setChannelListWidth] = useState(() => Number(localStorage.getItem('clw') || 220));
+  const [memberListWidth, setMemberListWidth]   = useState(() => Number(localStorage.getItem('mlw') || 220));
+
+  function startPanelResize(e: { clientX: number; preventDefault: () => void }, panel: 'channel' | 'member') {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = panel === 'channel' ? channelListWidth : memberListWidth;
+    let current = startW;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+
+    function onMove(ev: MouseEvent) {
+      const delta = ev.clientX - startX;
+      // member list grows as you drag LEFT (negative delta)
+      current = Math.max(160, Math.min(400, panel === 'channel' ? startW + delta : startW - delta));
+      if (panel === 'channel') setChannelListWidth(current);
+      else setMemberListWidth(current);
+    }
+    function onUp() {
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      localStorage.setItem(panel === 'channel' ? 'clw' : 'mlw', String(Math.round(current)));
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
   // Vanity invite link: code extracted from /invite/<code> URL on load.
   // Persists through the auth flow so the modal fires after login if needed.
   const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(() => {
@@ -2084,7 +2114,7 @@ export default function App() {
       ) : activeServer ? (
         <>
           {/* Channel list: full panel on desktop, slide-in overlay on mobile */}
-          <div className="hidden md:block">
+          <div className="hidden md:block shrink-0 overflow-hidden" style={{ width: channelListWidth }}>
             <ChannelList
               server={activeServer}
               channels={channels}
@@ -2100,6 +2130,11 @@ export default function App() {
               onDeleteChannel={handleDeleteChannel}
             />
           </div>
+          {/* Resize handle — desktop only */}
+          <div
+            className="hidden md:block w-1 shrink-0 cursor-col-resize hover:bg-white/10 active:bg-white/20 transition-colors"
+            onMouseDown={(e) => startPanelResize(e, 'channel')}
+          />
           {/* Mobile slide-in channel list */}
           <div className={`mobile-sidebar md:hidden ${mobileSidebarOpen ? 'open' : 'closed'}`}>
             <ChannelList
@@ -2206,18 +2241,25 @@ export default function App() {
           )}
 
           {/* Member list: always rendered but hidden on mobile via CSS; slide-in overlay uses portal pattern */}
-          <MemberList
-            members={members}
-            online={online}
-            me={user}
-            onOpenDm={openDm}
-            onClickUser={setProfileCardUserId}
-            className="hidden md:flex"
-            roles={activeServerId ? (rolesByServer[activeServerId] ?? []) : []}
-            canManageRoles={canManageRoles}
-            onAssignRole={assignRole}
-            onRemoveRole={removeRole}
+          {/* Resize handle — desktop only */}
+          <div
+            className="hidden md:block w-1 shrink-0 cursor-col-resize hover:bg-white/10 active:bg-white/20 transition-colors"
+            onMouseDown={(e) => startPanelResize(e, 'member')}
           />
+          <div className="hidden md:flex shrink-0 overflow-hidden" style={{ width: memberListWidth }}>
+            <MemberList
+              members={members}
+              online={online}
+              me={user}
+              onOpenDm={openDm}
+              onClickUser={setProfileCardUserId}
+              className="w-full"
+              roles={activeServerId ? (rolesByServer[activeServerId] ?? []) : []}
+              canManageRoles={canManageRoles}
+              onAssignRole={assignRole}
+              onRemoveRole={removeRole}
+            />
+          </div>
           {/* Mobile member list slide-in */}
           <div className={`mobile-sidebar-right md:hidden ${mobileMembersOpen ? 'open' : 'closed'}`}>
             <MemberList
