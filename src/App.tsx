@@ -21,6 +21,7 @@ import { api, getToken, setToken } from './lib/api';
 import { connectSocket, disconnectSocket } from './lib/socket';
 import {
   cacheKey,
+  cachePassphrase,
   clearKey,
   clearAllKeys,
   decryptText,
@@ -1307,6 +1308,7 @@ export default function App() {
       // Derive the AES-GCM key using the server's random kdf_salt (#11)
       const key = await deriveServerKey(passphrase, serverId, activeServer?.kdf_salt);
       cacheKey(serverId, key);
+      cachePassphrase(serverId, passphrase, activeServer?.kdf_salt);
       setKeysReady((prev) => ({ ...prev, [serverId]: true }));
 
       // Re-decrypt any already-fetched messages in this server
@@ -1448,6 +1450,7 @@ export default function App() {
     // pre-derive key using the random kdf_salt returned by the server (#11)
     const key = await deriveServerKey(passphrase, summary.id, summary.kdf_salt);
     cacheKey(summary.id, key);
+    cachePassphrase(summary.id, passphrase, summary.kdf_salt);
     setKeysReady((prev) => ({ ...prev, [summary.id]: true }));
     setActiveServerId(summary.id);
     // socket joins are managed server-side on connect; we still want this
@@ -1469,6 +1472,7 @@ export default function App() {
     setServers((prev) => (prev.find((s) => s.id === summary.id) ? prev : [...prev, summary]));
     const key = await deriveServerKey(passphrase, summary.id, summary.kdf_salt);
     cacheKey(summary.id, key);
+    cachePassphrase(summary.id, passphrase, summary.kdf_salt);
     setKeysReady((prev) => ({ ...prev, [summary.id]: true }));
     setActiveServerId(summary.id);
     socketRef.current?.emit('server:join', summary.id);
@@ -1485,6 +1489,7 @@ export default function App() {
     // Re-derive key with new passphrase + new kdf_salt, update cache
     const key = await deriveServerKey(passphrase, serverId, kdfSalt);
     cacheKey(serverId, key);
+    cachePassphrase(serverId, passphrase, kdfSalt);
     setServers((prev) => prev.map((s) => s.id === serverId ? { ...s, kdf_salt: kdfSalt } : s));
     setKeysReady((prev) => ({ ...prev, [serverId]: true }));
     // Clear all cached messages — they can't be decrypted with the new key
@@ -2238,6 +2243,7 @@ export default function App() {
             // Derive + cache AES key from the passphrase the user just typed
             const key = await deriveServerKey(passphrase, server.id, server.kdf_salt ?? null);
             cacheKey(server.id, key);
+            cachePassphrase(server.id, passphrase, server.kdf_salt ?? null);
             setKeysReady((prev) => ({ ...prev, [server.id]: true }));
             setActiveServerId(server.id);
             socketRef.current?.emit('server:join', server.id);
