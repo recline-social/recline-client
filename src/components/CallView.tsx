@@ -1,0 +1,657 @@
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+// Note: micOn state lives in App.tsx (lifted) so it persists across channel navigation.
+import { Avatar } from './Avatar';
+import { userColor } from '../lib/colors';
+import type { Channel, Member, User } from '../types';
+import { CallManager, type PeerSnapshot, type ScreenShareOptions, type StreamKind } from '../lib/webrtc';
+import { ScreenShareDialog } from './ScreenShareDialog';
+
+type Tile = {
+  key: string;
+  userId: string;
+  name: string;
+  stream: MediaStream | null;
+  kind: StreamKind;
+  isSelf: boolean;
+  showVideoControlled: boolean;
+  connectionState?: RTCPeerConnectionState;
+};
+
+// ── Speaking detection ──────────────────────────────────────────────────────
+// Analyses audio levels from all streams in the call and returns a map of
+// userId → isSpeaking. Updates at 100 ms intervals. Uses a 15-frame (~1.5 s)
+// silence debounce so the indicator doesn't flicker on short pauses.
+
+function useSpeakingDetection(
+  localStream: MediaStream | null,
+  localUserId: string,
+  peers: PeerSnapshot[],
+): Record<string, boolean> {
+  const [speaking, setSpeaking] = useState<Record<string, boolean>>({});
+  const speakingRef = useRef<Record<string, boolean>>({});
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analysersRef = useRef<Map<string, { analyser: AnalyserNode; buffer: Float32Array<ArrayBuffer>; silentFrames: number }>>(new Map());
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const poll = useCallback(() => {
+    const prev = speakingRef.current;
+    const next: Record<string, boolean> = {};
+    let changed = false;
+    for (const [userId, entry] of analysersRef.current.entries()) {
+      entry.analyser.getFloatTimeDomainData(entry.buffer);
+      let sum = 0;
+      for (let i = 0; i < entry.buffer.length; i++) sum += entry.buffer[i] * entry.buffer[i];
+      const rms = Math.sqrt(sum / entry.buffer.length);
+      const was = prev[userId] ?? false;
+      if (rms > 0.015) {
+        next[userId] = true;
+        entry.silentFrames = 0;
+      } else {
+        entry.silentFrames++;
+        next[userId] = was && entry.silentFrames < 15;
+      }
+      if (next[userId] !== was) changed = true;
+    }
+    if (changed) {
+      speakingRef.current = next;
+      setSpeaking({ ...next });
+    }
+  }, []);
+
+  useEffect(() => {
+    // Build list of (userId, stream) pairs to analyse — camera tracks only
+    const targets: { userId: string; stream: MediaStream }[] = [];
+    if (localStream && localStream.getAudioTracks().length > 0) {
+      targets.push({ userId: localUserId, stream: localStream });
+    }
+    for (const peer of peers) {
+      const cam = peer.streams.find((s) => s.kind === 'camera');
+      if (cam && cam.stream.getAudioTracks().length > 0) {
+        targets.push({ userId: peer.userId, stream: cam.stream });
+      }
+    }
+
+    if (targets.length === 0) return;
+
+    // Create AudioContext lazily (must follow a user gesture on some browsers)
+    if (!audioCtxRef.current) {
+      try { audioCtxRef.current = new AudioContext(); } catch { return; }
+    }
+    const ctx = audioCtxRef.current;
+
+    const wanted = new Set(targets.map((t) => t.userId));
+
+    // Remove analysers for users who left
+    for (const id of [...analysersRef.current.keys()]) {
+      if (!wanted.has(id)) analysersRef.current.delete(id);
+    }
+
+    // Add analysers for new users
+    for (const { userId, stream } of targets) {
+      if (!analysersRef.current.has(userId)) {
+        try {
+          const source = ctx.createMediaStreamSource(stream);
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 512;
+          analyser.smoothingTimeConstant = 0.4;
+          source.connect(analyser);
+          analysersRef.current.set(userId, { analyser, buffer: new Float32Array(analyser.fftSize) as Float32Array<ArrayBuffer>, silentFrames: 0 });
+        } catch { /* AudioContext unavailable in some environments */ }
+      }
+    }
+
+    // Start / restart polling interval
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(poll, 100);
+
+    return () => {
+      if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localStream, localUserId, peers.map((p) => p.socketId + p.streams.length).join(','), poll]);
+
+  // Cleanup AudioContext on unmount
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      audioCtxRef.current?.close().catch(() => {});
+      audioCtxRef.current = null;
+    };
+  }, []);
+
+  return speaking;
+}
+
+// Screen share is not available on most mobile browsers (no getDisplayMedia).
+const canScreenShare =
+  typeof navigator !== 'undefined' &&
+  typeof (navigator.mediaDevices as MediaDevices & { getDisplayMedia?: unknown })?.getDisplayMedia === 'function';
+
+type Props = {
+  channel: Channel;
+  manager: CallManager;
+  me: User;
+  members: Record<string, Member>;
+  inCall: boolean;
+  micOn: boolean;
+  onToggleMic: (v: boolean) => void;
+  onJoinSuccess: () => void;
+  onLeave: () => void;
+  localStream: MediaStream | null;
+  localScreen: MediaStream | null;
+  peers: PeerSnapshot[];
+  /** Mobile only — opens the channel list drawer */
+  onOpenSidebar?: () => void;
+};
+
+export function CallView({
+  channel,
+  manager,
+  me,
+  members,
+  inCall,
+  micOn,
+  onToggleMic,
+  onJoinSuccess,
+  onLeave,
+  localStream,
+  localScreen,
+  peers,
+  onOpenSidebar,
+}: Props) {
+  const [camOn, setCamOn] = useState(false);
+  const [joining, setJoining] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const speaking = useSpeakingDetection(localStream, me.id, peers);
+
+  useEffect(() => {
+    setSharing(localScreen !== null);
+  }, [localScreen]);
+
+  async function join(withVideo: boolean) {
+    setJoining(true);
+    setError(null);
+    try {
+      await manager.join(channel.id, { video: withVideo });
+      onToggleMic(true);
+      setCamOn(withVideo);
+      onJoinSuccess();
+    } catch (err: any) {
+      setError(err?.message ?? 'Could not access microphone');
+    } finally {
+      setJoining(false);
+    }
+  }
+
+  function leave() {
+    setSharing(false);
+    onLeave();
+  }
+
+  async function toggleScreen() {
+    if (!canScreenShare) {
+      setError('Screen sharing is not supported in this browser.');
+      return;
+    }
+    setError(null);
+    if (manager.isSharingScreen()) {
+      try {
+        await manager.stopScreenShare();
+      } catch (err: any) {
+        setError(err?.message ?? 'Could not stop screen share');
+        return;
+      }
+      setSharing(false);
+    } else {
+      setShareDialogOpen(true);
+    }
+  }
+
+  async function startSharing(opts: ScreenShareOptions) {
+    if (!canScreenShare) {
+      setError('Screen sharing is not supported in this browser.');
+      return;
+    }
+    setError(null);
+    try {
+      await manager.startScreenShare(opts);
+      setSharing(true);
+    } catch (err: any) {
+      // NotAllowedError / AbortError = user closed or denied the picker → close quietly
+      if (err?.name !== 'NotAllowedError' && err?.name !== 'AbortError') {
+        setError(err?.message ?? 'Could not start screen share');
+      }
+    }
+  }
+
+  const tiles = useMemo<Tile[]>(() => {
+    const t: Tile[] = [];
+    if (inCall) {
+      t.push({
+        key: 'self-cam',
+        userId: me.id,
+        name: members[me.id]?.displayName ?? me.displayName,
+        stream: localStream,
+        kind: 'camera',
+        isSelf: true,
+        showVideoControlled: camOn,
+      });
+      if (localScreen) {
+        t.push({
+          key: 'self-screen',
+          userId: me.id,
+          name: (members[me.id]?.displayName ?? me.displayName) + ' — screen',
+          stream: localScreen,
+          kind: 'screen',
+          isSelf: true,
+          showVideoControlled: true,
+        });
+      }
+    }
+    for (const peer of peers) {
+      for (const rs of peer.streams) {
+        const name = members[peer.userId]?.displayName ?? 'user';
+        t.push({
+          key: `${peer.socketId}:${rs.streamId}`,
+          userId: peer.userId,
+          name: rs.kind === 'screen' ? `${name} — screen` : name,
+          stream: rs.stream,
+          kind: rs.kind,
+          isSelf: false,
+          showVideoControlled: true,
+        });
+      }
+      // ensure every peer shows at least an avatar tile, even with no streams yet
+      if (peer.streams.length === 0) {
+        t.push({
+          key: `${peer.socketId}:placeholder`,
+          userId: peer.userId,
+          name: members[peer.userId]?.displayName ?? 'user',
+          stream: null,
+          kind: 'camera',
+          isSelf: false,
+          showVideoControlled: false,
+          connectionState: peer.connectionState,
+        });
+      }
+    }
+    return t;
+  }, [inCall, localStream, localScreen, peers, me, members, camOn]);
+
+  const screenTiles = tiles.filter((t) => t.kind === 'screen');
+  const camTiles = tiles.filter((t) => t.kind === 'camera');
+
+  return (
+    <div className="flex-1 min-w-0 flex flex-col bg-ink-900/40">
+      <header className="h-12 px-3 md:px-5 flex items-center justify-between border-b border-white/5 bg-ink-900/60 backdrop-blur shrink-0 gap-2">
+        {/* Mobile hamburger — opens channel list */}
+        {onOpenSidebar && (
+          <button
+            onClick={onOpenSidebar}
+            className="md:hidden h-9 w-9 grid place-items-center rounded-lg text-ink-300 hover:bg-white/[0.06] hover:text-ink-100 shrink-0"
+            aria-label="Open channel list"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+          </button>
+        )}
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span className="text-ink-300">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M11 5L6 9H2v6h4l5 4V5zM15.54 8.46a5 5 0 0 1 0 7.07" />
+            </svg>
+          </span>
+          <h2 className="text-[14px] font-semibold truncate">{channel.name}</h2>
+          <span className="h-3.5 w-px bg-white/10 mx-2 hidden sm:block" />
+          <span className="text-[11px] text-ink-300 hidden sm:block">
+            {inCall ? `Connected · ${peers.length + 1} in call` : 'Voice room'}
+          </span>
+        </div>
+        {inCall && (
+          <span className="pill bg-emerald-500/10 text-emerald-300 shrink-0">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulseDot" /> live
+          </span>
+        )}
+      </header>
+
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        {/* ICE failure banner — shown when every peer has permanently failed to connect */}
+        {inCall && peers.length > 0 && peers.every((p) => p.connectionState === 'failed') && (
+          <div className="shrink-0 mx-3 mt-3 px-3 py-2 rounded-lg bg-rose-900/30 border border-rose-700/30 text-rose-300 text-xs">
+            ⚠ Connection failed — peers may be on different networks. A TURN relay server is required for cross-network calls.
+          </div>
+        )}
+        {!inCall ? (
+          /* Pre-join: scrollable so small screens can reach the buttons */
+          <div className="flex-1 overflow-y-auto p-4 md:p-6">
+            <PreJoin
+              channelName={channel.name}
+              joining={joining}
+              error={error}
+              onJoin={join}
+            />
+          </div>
+        ) : (
+          /* In call: must fill the remaining height cleanly — no scroll wrapper */
+          <div className="flex-1 min-h-0 p-2 md:p-4 flex flex-col">
+            <CallStage screenTiles={screenTiles} camTiles={camTiles} speaking={speaking} />
+          </div>
+        )}
+      </div>
+
+      <ScreenShareDialog
+        open={shareDialogOpen}
+        onClose={() => setShareDialogOpen(false)}
+        onStart={startSharing}
+      />
+
+      {inCall && (
+        <div className="px-5 pb-5 pt-2">
+          {error && (
+            <div className="text-rose-300 text-xs mb-2 px-1">{error}</div>
+          )}
+          <div className="panel-inner rounded-2xl px-4 py-3 flex items-center justify-center gap-3">
+            <ControlButton
+              active={micOn}
+              onClick={() => onToggleMic(manager.toggleMic(!micOn))}
+              label={micOn ? 'Mute' : 'Unmute'}
+              variant={micOn ? 'on' : 'muted'}
+              icon={
+                micOn ? (
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="9" y="2" width="6" height="12" rx="3" />
+                    <path d="M19 10a7 7 0 0 1-14 0M12 19v3" />
+                  </svg>
+                ) : (
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="2" y1="2" x2="22" y2="22" />
+                    <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9V5a3 3 0 0 0-5.94-.6" />
+                    <path d="M19 10a7 7 0 0 1-.11 1.23M12 19v3" />
+                  </svg>
+                )
+              }
+            />
+            <ControlButton
+              active={camOn}
+              onClick={async () => {
+                if (manager.hasVideo()) {
+                  setCamOn(manager.toggleCam(!camOn));
+                } else {
+                  // Pass false so onCallEnded doesn't fire — we're rejoining immediately.
+                  // Firing it would set inCall=false in App.tsx, breaking the UI mid-rejoin.
+                  manager.leave(false);
+                  try {
+                    await manager.join(channel.id, { video: true });
+                    onToggleMic(true);
+                    setCamOn(true);
+                    onJoinSuccess();
+                  } catch (err: any) {
+                    setError(err?.message ?? 'Could not access camera');
+                  }
+                }
+              }}
+              label={camOn ? 'Stop video' : 'Start video'}
+              icon={
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polygon points="23 7 16 12 23 17 23 7" />
+                  <rect x="1" y="5" width="15" height="14" rx="2" />
+                </svg>
+              }
+            />
+            {canScreenShare && (
+              <ControlButton
+                active={sharing}
+                onClick={toggleScreen}
+                label={sharing ? 'Stop sharing' : 'Share screen'}
+                icon={
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="2" y="3" width="20" height="14" rx="2" />
+                    <line x1="8" y1="21" x2="16" y2="21" />
+                    <line x1="12" y1="17" x2="12" y2="21" />
+                  </svg>
+                }
+              />
+            )}
+            <button className="btn-danger !rounded-xl !px-4 !py-2" onClick={leave}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91" />
+                <line x1="23" y1="1" x2="1" y2="23" />
+              </svg>
+              Leave
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PreJoin({
+  channelName,
+  joining,
+  error,
+  onJoin,
+}: {
+  channelName: string;
+  joining: boolean;
+  error: string | null;
+  onJoin: (withVideo: boolean) => void;
+}) {
+  return (
+    <div className="h-full grid place-items-center">
+      <div className="text-center max-w-md">
+        <div className="mx-auto h-16 w-16 grid place-items-center rounded-2xl bg-accent-teal/15 text-accent-teal mb-4">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M11 5L6 9H2v6h4l5 4V5z" />
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+          </svg>
+        </div>
+        <h3 className="text-lg font-semibold">{channelName}</h3>
+        <p className="text-sm text-ink-300 mt-1 mb-5">
+          Start or join a peer-to-peer call. Audio, video and screen share stay between you and the other people in the room.
+        </p>
+        {error && <div className="text-rose-300 text-xs mb-3">{error}</div>}
+        <div className="flex gap-2 justify-center">
+          <button className="btn-primary" disabled={joining} onClick={() => onJoin(false)}>
+            {joining ? 'Connecting…' : 'Join voice'}
+          </button>
+          <button className="btn-ghost border border-white/10" disabled={joining} onClick={() => onJoin(true)}>
+            Join with video
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CallStage({ screenTiles, camTiles, speaking }: { screenTiles: Tile[]; camTiles: Tile[]; speaking: Record<string, boolean> }) {
+  if (screenTiles.length === 0) {
+    const cols = camTiles.length <= 1 ? 1 : camTiles.length <= 4 ? 2 : 3;
+    return (
+      <div className="flex-1 min-h-0 flex flex-col items-center justify-center w-full">
+        <div
+          className="w-full max-w-5xl grid gap-3"
+          style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+        >
+          {camTiles.map((t) => (
+            <Tile tile={t} key={t.key} isSpeaking={!!speaking[t.userId]} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex-1 min-h-0 flex flex-col gap-2 md:gap-3">
+      <div
+        className="flex-1 min-h-0 grid gap-2 md:gap-3"
+        style={{ gridTemplateColumns: `repeat(${screenTiles.length <= 1 ? 1 : 2}, minmax(0, 1fr))` }}
+      >
+        {screenTiles.map((t) => (
+          <Tile tile={t} key={t.key} variant="primary" isSpeaking={false} />
+        ))}
+      </div>
+      <div className="flex gap-2 overflow-x-auto pb-1 shrink-0">
+        {camTiles.map((t) => (
+          <div key={t.key} className="w-32 md:w-44 shrink-0">
+            <Tile tile={t} variant="strip" isSpeaking={!!speaking[t.userId]} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Tile({ tile, variant = 'grid', isSpeaking = false }: { tile: Tile; variant?: 'grid' | 'primary' | 'strip'; isSpeaking?: boolean }) {
+  const vidRef = useRef<HTMLVideoElement>(null);
+  const [hasVideo, setHasVideo] = useState(false);
+
+  useEffect(() => {
+    const v = vidRef.current;
+    if (!v) return;
+    v.srcObject = tile.stream;
+    // Check both enabled (local control) and !muted (sender stopped sending frames).
+    // Remote camera disable causes the receiving track to go muted; without this
+    // check the tile would show black frames instead of an avatar.
+    const update = () =>
+      setHasVideo(
+        (tile.stream?.getVideoTracks().filter((t) => t.enabled && !t.muted).length ?? 0) > 0,
+      );
+    update();
+    const tracks = tile.stream?.getTracks() ?? [];
+    tracks.forEach((t) => {
+      t.addEventListener('ended', update);
+      t.addEventListener('mute', update);
+      t.addEventListener('unmute', update);
+    });
+    return () => {
+      tracks.forEach((t) => {
+        t.removeEventListener('ended', update);
+        t.removeEventListener('mute', update);
+        t.removeEventListener('unmute', update);
+      });
+      // Release MediaStream reference to prevent memory leak (#32)
+      v.pause();
+      v.srcObject = null;
+    };
+  }, [tile.stream]);
+
+  const c = userColor(tile.userId, tile.isSelf);
+  const showVid = hasVideo && tile.showVideoControlled;
+  const isScreen = tile.kind === 'screen';
+  const cs = tile.connectionState;
+  const isConnecting = !tile.isSelf && (cs === 'new' || cs === 'connecting');
+  const isFailed = !tile.isSelf && cs === 'failed';
+
+  const baseClasses =
+    variant === 'primary'
+      ? 'relative h-full w-full rounded-2xl overflow-hidden border border-white/5 bg-black'
+      : variant === 'strip'
+      ? 'relative aspect-video rounded-xl overflow-hidden border border-white/5 bg-ink-800/60'
+      : 'relative aspect-video rounded-2xl overflow-hidden border border-white/5 bg-ink-800/60';
+
+  // mirror local camera; never mirror screen captures
+  const mirror = tile.isSelf && tile.kind === 'camera';
+
+  const ringStyle = isFailed
+    ? 'inset 0 0 0 2px rgba(239,68,68,0.5)'
+    : isSpeaking
+    ? '0 0 0 2px rgba(74,222,128,0.9), 0 0 16px rgba(74,222,128,0.35)'
+    : `inset 0 0 0 1px ${c.ring}`;
+
+  return (
+    <div
+      className={baseClasses}
+      style={{
+        boxShadow: ringStyle,
+        transition: 'box-shadow 0.15s ease',
+      }}
+    >
+      {/* Always muted — audio for remote peers is handled by persistent <audio>
+          elements in App.tsx so it keeps playing when the user navigates to a
+          text channel while in a call. Self is always muted to prevent echo. */}
+      <video
+        ref={vidRef}
+        autoPlay
+        playsInline
+        muted
+        className={`h-full w-full ${isScreen ? 'object-contain bg-black' : 'object-cover'} ${
+          showVid ? '' : 'opacity-0'
+        } ${mirror ? '-scale-x-100' : ''}`}
+      />
+      {!showVid && (
+        <div className="absolute inset-0 grid place-items-center">
+          <Avatar name={tile.name} id={tile.userId} size={variant === 'strip' ? 'md' : 'lg'} isSelf={tile.isSelf} />
+        </div>
+      )}
+      {/* Connecting spinner overlay */}
+      {isConnecting && (
+        <div className="absolute inset-0 grid place-items-center pointer-events-none">
+          <svg className="animate-spin text-white/40" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+          </svg>
+        </div>
+      )}
+      {/* Failed badge */}
+      {isFailed && (
+        <div className="absolute top-2 left-2 right-2 flex justify-center pointer-events-none">
+          <span className="pill text-[10px] bg-rose-900/80 text-rose-300 border-rose-700/40">
+            connection failed
+          </span>
+        </div>
+      )}
+      <div className="absolute left-2 bottom-2 right-2 flex items-center justify-between gap-2">
+        <span
+          className="pill text-[11px] backdrop-blur truncate max-w-full"
+          style={{
+            background: 'rgba(0,0,0,0.55)',
+            color: c.text,
+            boxShadow: `inset 0 0 0 1px ${c.ring}`,
+          }}
+        >
+          {isScreen && (
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+              <rect x="2" y="3" width="20" height="14" rx="2" />
+              <line x1="8" y1="21" x2="16" y2="21" />
+            </svg>
+          )}
+          <span className="truncate">{tile.name}{tile.isSelf && tile.kind === 'camera' && ' · you'}</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ControlButton({
+  active,
+  onClick,
+  label,
+  icon,
+  variant = 'on',
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  icon: React.ReactNode;
+  variant?: 'on' | 'muted';
+}) {
+  const cls = active
+    ? 'bg-accent-violet/20 border-accent-violet/30 text-accent-violet'
+    : variant === 'muted'
+    ? 'bg-rose-500/15 border-rose-500/20 text-rose-300'
+    : 'bg-ink-800/70 border-white/5 text-ink-200 hover:text-ink-100';
+  return (
+    <button
+      onClick={onClick}
+      title={label}
+      className={`h-11 w-11 rounded-xl grid place-items-center transition-colors border ${cls}`}
+    >
+      {icon}
+    </button>
+  );
+}

@@ -1,0 +1,680 @@
+import type { Socket } from 'socket.io-client';
+
+export type StreamKind = 'camera' | 'screen';
+
+export type ScreenSurface = 'any' | 'monitor' | 'window' | 'browser';
+
+export type ScreenShareOptions = {
+  surface?: ScreenSurface;
+  maxWidth?: number;
+  maxHeight?: number;
+  frameRate?: number;
+  captureAudio?: boolean;
+};
+
+export type RemoteStream = {
+  streamId: string;
+  stream: MediaStream;
+  kind: StreamKind;
+};
+
+type Peer = {
+  socketId: string;
+  userId: string;
+  pc: RTCPeerConnection;
+  streams: Map<string, RemoteStream>; // streamId -> RemoteStream
+  // pendingScreenIds are announced by the remote BEFORE the track arrives;
+  // we use the set to label ontrack'd streams as 'screen' when they show up.
+  pendingScreenIds: Set<string>;
+  // count-based fallback for when msid doesn't propagate intact: how many
+  // screens this peer has announced minus how many we've already labeled.
+  unmatchedScreens: number;
+  // ICE candidates that arrived before setRemoteDescription completed.
+  // Without queuing, 'await setRemoteDescription' yields the microtask queue
+  // and the next socket event fires addIceCandidate while remoteDescription is
+  // still null — it throws, the catch swallows it, and the candidate is gone.
+  pendingCandidates: RTCIceCandidateInit[];
+  // Timer handle for ICE restart debounce — cleared when connection recovers.
+  iceRestartTimer?: ReturnType<typeof setTimeout>;
+  // How many ICE restarts we've attempted for this peer (caps retries).
+  iceRestartAttempts: number;
+};
+
+type Events = {
+  onPeers: (peers: PeerSnapshot[]) => void;
+  onLocalStream: (stream: MediaStream | null) => void;
+  onLocalScreen: (stream: MediaStream | null) => void;
+  /** Fired when the call actually ends (leave button, kicked, etc.) — NOT when
+   *  switching voice channels internally. Lets React stay in sync with call state (#9). */
+  onCallEnded?: () => void;
+};
+
+export type PeerSnapshot = {
+  socketId: string;
+  userId: string;
+  streams: RemoteStream[];
+  connectionState: RTCPeerConnectionState;
+};
+
+// ICE server fallback — used only when the server doesn't return iceServers in
+// the call:join response (e.g., TURN_URL/TURN_SECRET not configured).
+// Set VITE_ICE_SERVERS to a JSON array to override at build time.
+function buildFallbackIceServers(): RTCIceServer[] {
+  try {
+    const raw = (import.meta as any).env?.VITE_ICE_SERVERS as string | undefined;
+    if (raw) return JSON.parse(raw) as RTCIceServer[];
+  } catch { /* ignore */ }
+  // Multiple STUN servers so 701 errors on one don't leave peers candidate-less
+  return [{
+    urls: [
+      'stun:stun.l.google.com:19302',
+      'stun:stun.cloudflare.com:3478',
+    ],
+  }];
+}
+const FALLBACK_ICE_SERVERS: RTCIceServer[] = buildFallbackIceServers();
+
+export class CallManager {
+  private socket: Socket;
+  private channelId: string | null = null;
+  private peers = new Map<string, Peer>();
+  private localStream: MediaStream | null = null;
+  private screenStream: MediaStream | null = null;
+  private events: Events;
+  private wantVideo = false;
+  // Per-call auth token — issued by the server on successful call:join.
+  // Must be included in all subsequent signaling events so the server can
+  // verify the socket completed an authenticated join before relaying signals.
+  private callToken: string | null = null;
+  // ICE servers — updated from call:join response; falls back to FALLBACK_ICE_SERVERS
+  private iceServers: RTCIceServer[] = FALLBACK_ICE_SERVERS;
+  // signaling guards
+  private makingOffer = new Map<string, boolean>();
+  // screen-on events that arrived for a peer we haven't created yet
+  private pendingScreensBySocketId = new Map<string, Set<string>>();
+
+  constructor(socket: Socket, events: Events) {
+    this.socket = socket;
+    this.events = events;
+    this.socket.on('call:peer-joined', this.handlePeerJoined);
+    this.socket.on('call:peer-left', this.handlePeerLeft);
+    this.socket.on('call:signal', this.handleSignal);
+    this.socket.on('call:screen-on', this.handleRemoteScreenOn);
+    this.socket.on('call:screen-off', this.handleRemoteScreenOff);
+  }
+
+  destroy() {
+    this.socket.off('call:peer-joined', this.handlePeerJoined);
+    this.socket.off('call:peer-left', this.handlePeerLeft);
+    this.socket.off('call:signal', this.handleSignal);
+    this.socket.off('call:screen-on', this.handleRemoteScreenOn);
+    this.socket.off('call:screen-off', this.handleRemoteScreenOff);
+    this.leave(false); // don't fire onCallEnded — socket lifecycle handles this
+  }
+
+  isInCall(channelId?: string) {
+    if (!channelId) return this.channelId !== null;
+    return this.channelId === channelId;
+  }
+
+  currentChannel() {
+    return this.channelId;
+  }
+
+  async join(channelId: string, opts: { video?: boolean } = {}) {
+    // When switching voice channels, leave the old call without firing onCallEnded
+    // (we're immediately joining a new one — React should not reset inCall state).
+    if (this.channelId && this.channelId !== channelId) this.leave(false);
+    if (this.channelId === channelId) return;
+    this.channelId = channelId;
+    this.wantVideo = !!opts.video;
+
+    try {
+      this.localStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: this.wantVideo ? { width: 1280, height: 720 } : false,
+      });
+    } catch (err) {
+      this.channelId = null;
+      this.localStream = null;
+      this.events.onLocalStream(null);
+      throw err;
+    }
+    this.events.onLocalStream(this.localStream);
+
+    const existing = await new Promise<{
+      peers: { socketId: string; userId: string }[];
+      screens: { fromSocketId: string; streamId: string }[];
+    }>((resolve, reject) => {
+      // 15 s hard timeout — guards against the server catch block eating the exception
+      // and never calling ack, which would leave the client stuck on "Connecting…".
+      const timeoutId = setTimeout(() => {
+        reject(new Error('Server did not respond — please try again'));
+      }, 15_000);
+
+      this.socket.emit(
+        'call:join',
+        channelId,
+        (resp: {
+          peers: { socketId: string; userId: string }[];
+          screens?: { fromSocketId: string; streamId: string }[];
+          callToken?: string;
+          iceServers?: RTCIceServer[];
+          error?: string;
+        }) => {
+          clearTimeout(timeoutId);
+          if (resp?.error) {
+            reject(new Error(resp.error === 'unauthorized' ? 'Not authorised to join this call' : resp.error));
+            return;
+          }
+          // Store the per-call auth token for all subsequent signaling operations.
+          this.callToken = resp?.callToken ?? null;
+          // Use ICE servers from the server (includes time-limited TURN credentials)
+          // if provided; otherwise fall back to the build-time static config.
+          if (resp?.iceServers?.length) this.iceServers = resp.iceServers as RTCIceServer[];
+          resolve({
+            peers: resp?.peers ?? [],
+            screens: resp?.screens ?? [],
+          });
+        },
+      );
+    });
+
+    for (const peer of existing.peers) {
+      const created = this.createPeer(peer.socketId, peer.userId);
+      for (const s of existing.screens) {
+        if (s.fromSocketId === peer.socketId) {
+          if (!created.pendingScreenIds.has(s.streamId)) {
+            created.pendingScreenIds.add(s.streamId);
+            created.unmatchedScreens += 1;
+          }
+        }
+      }
+      await this.makeOffer(created);
+    }
+    this.emitPeers();
+  }
+
+  /** @param fireCallback - set false when switching voice channels internally
+   *  so React doesn't reset inCall state mid-join (#9 / #33). */
+  leave(fireCallback = true) {
+    if (this.channelId) {
+      if (this.screenStream) {
+        this.socket.emit('call:screen-off', {
+          channelId: this.channelId,
+          streamId: this.screenStream.id,
+          callToken: this.callToken,
+        });
+      }
+      this.socket.emit('call:leave', this.channelId);
+      this.channelId = null;
+      this.callToken = null; // revoke local token on leave
+    }
+    for (const peer of this.peers.values()) {
+      if (peer.iceRestartTimer !== undefined) clearTimeout(peer.iceRestartTimer);
+      peer.pc.close();
+    }
+    this.peers.clear();
+    this.pendingScreensBySocketId.clear();
+    this.makingOffer.clear();
+    if (this.localStream) {
+      this.localStream.getTracks().forEach((t) => t.stop());
+      this.localStream = null;
+    }
+    if (this.screenStream) {
+      this.screenStream.getTracks().forEach((t) => t.stop());
+      this.screenStream = null;
+    }
+    this.events.onLocalStream(null);
+    this.events.onLocalScreen(null);
+    this.emitPeers();
+    if (fireCallback) this.events.onCallEnded?.();
+  }
+
+  getMicEnabled(): boolean {
+    return this.localStream?.getAudioTracks()[0]?.enabled ?? true;
+  }
+
+  toggleMic(enabled?: boolean): boolean {
+    if (!this.localStream) return false;
+    const tracks = this.localStream.getAudioTracks();
+    const next = enabled ?? !tracks[0]?.enabled;
+    tracks.forEach((t) => (t.enabled = next));
+    return next;
+  }
+
+  toggleCam(enabled?: boolean): boolean {
+    if (!this.localStream) return false;
+    const tracks = this.localStream.getVideoTracks();
+    if (tracks.length === 0) return false;
+    const next = enabled ?? !tracks[0].enabled;
+    tracks.forEach((t) => (t.enabled = next));
+    return next;
+  }
+
+  hasVideo() {
+    return (this.localStream?.getVideoTracks().length ?? 0) > 0;
+  }
+
+  isSharingScreen() {
+    return this.screenStream !== null;
+  }
+
+  async startScreenShare(opts: ScreenShareOptions = {}): Promise<MediaStream> {
+    if (!this.channelId) throw new Error('Not in a call');
+    if (this.screenStream) return this.screenStream;
+
+    const video: MediaTrackConstraints = {};
+    if (opts.maxWidth) video.width = { max: opts.maxWidth };
+    if (opts.maxHeight) video.height = { max: opts.maxHeight };
+    if (opts.frameRate) video.frameRate = { ideal: opts.frameRate, max: opts.frameRate };
+    if (opts.surface && opts.surface !== 'any') {
+      // displaySurface is a hint to the browser picker — non-matching surfaces
+      // remain hidden if the browser honors the constraint.
+      (video as MediaTrackConstraints & { displaySurface?: string }).displaySurface = opts.surface;
+    }
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: Object.keys(video).length ? video : true,
+        audio: opts.captureAudio !== false,
+      });
+    } catch (err) {
+      // user denied / closed picker — surface a clean failure
+      throw err;
+    }
+
+    this.screenStream = stream;
+    // announce so peers label the inbound streamId as a screen, not a camera
+    this.socket.emit('call:screen-on', {
+      channelId: this.channelId,
+      streamId: stream.id,
+      callToken: this.callToken,
+    });
+
+    for (const peer of this.peers.values()) {
+      for (const track of stream.getTracks()) peer.pc.addTrack(track, stream);
+      await this.makeOffer(peer);
+    }
+
+    // auto-stop when the user clicks the browser's "Stop sharing" UI
+    stream.getVideoTracks()[0].addEventListener('ended', () => {
+      this.stopScreenShare().catch(() => {});
+    });
+
+    this.events.onLocalScreen(stream);
+    return stream;
+  }
+
+  async stopScreenShare() {
+    if (!this.screenStream || !this.channelId) return;
+    const stream = this.screenStream;
+    const streamId = stream.id;
+    const tracks = stream.getTracks();
+    const channelId = this.channelId;
+
+    // Null out FIRST so when track.stop() below fires 'ended', the listener's
+    // re-entry into stopScreenShare hits the guard and bails immediately.
+    this.screenStream = null;
+
+    for (const peer of this.peers.values()) {
+      const senders = peer.pc.getSenders();
+      for (const t of tracks) {
+        const sender = senders.find((s) => s.track === t);
+        if (sender) {
+          try {
+            peer.pc.removeTrack(sender);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      await this.makeOffer(peer);
+    }
+
+    tracks.forEach((t) => t.stop());
+    this.events.onLocalScreen(null);
+    this.socket.emit('call:screen-off', { channelId, streamId, callToken: this.callToken });
+  }
+
+  /* ------------------------ Internal ------------------------ */
+
+  private handlePeerJoined = (data: { channelId: string; userId: string; socketId: string }) => {
+    if (data.channelId !== this.channelId) return;
+    if (!this.peers.has(data.socketId)) {
+      this.createPeer(data.socketId, data.userId);
+      this.emitPeers();
+    }
+  };
+
+  private handlePeerLeft = (data: { channelId: string; userId: string; socketId: string }) => {
+    if (data.channelId !== this.channelId) return;
+    const peer = this.peers.get(data.socketId);
+    if (peer) {
+      if (peer.iceRestartTimer !== undefined) clearTimeout(peer.iceRestartTimer);
+      peer.pc.close();
+      this.peers.delete(data.socketId);
+      // Also flush any queued screen-on events for this socket so stale
+      // entries don't get applied if the same socketId reconnects later.
+      this.pendingScreensBySocketId.delete(data.socketId);
+      this.emitPeers();
+    }
+  };
+
+  private handleRemoteScreenOn = (data: {
+    channelId: string;
+    fromSocketId: string;
+    streamId: string;
+  }) => {
+    if (data.channelId !== this.channelId) return;
+    const peer = this.peers.get(data.fromSocketId);
+    if (!peer) {
+      // peer object not yet created (race during join). Queue so it's applied
+      // when createPeer runs.
+      const q = this.pendingScreensBySocketId.get(data.fromSocketId) ?? new Set<string>();
+      q.add(data.streamId);
+      this.pendingScreensBySocketId.set(data.fromSocketId, q);
+      return;
+    }
+    const existing = peer.streams.get(data.streamId);
+    if (existing) {
+      if (existing.kind !== 'screen') {
+        existing.kind = 'screen';
+        this.emitPeers();
+      }
+    } else {
+      peer.pendingScreenIds.add(data.streamId);
+      peer.unmatchedScreens += 1;
+    }
+  };
+
+  private handleRemoteScreenOff = (data: {
+    channelId: string;
+    fromSocketId: string;
+    streamId: string;
+  }) => {
+    if (data.channelId !== this.channelId) return;
+    const queued = this.pendingScreensBySocketId.get(data.fromSocketId);
+    if (queued) {
+      queued.delete(data.streamId);
+      if (queued.size === 0) this.pendingScreensBySocketId.delete(data.fromSocketId);
+    }
+    const peer = this.peers.get(data.fromSocketId);
+    if (!peer) return;
+    if (peer.pendingScreenIds.delete(data.streamId)) {
+      peer.unmatchedScreens = Math.max(0, peer.unmatchedScreens - 1);
+    }
+    // If we have a stream matched by streamId, drop it. Otherwise drop the
+    // most recent stream we tagged 'screen' (covers the msid-mismatch case).
+    if (peer.streams.has(data.streamId)) {
+      peer.streams.delete(data.streamId);
+      this.emitPeers();
+      return;
+    }
+    for (const [id, rs] of Array.from(peer.streams.entries()).reverse()) {
+      if (rs.kind === 'screen') {
+        peer.streams.delete(id);
+        this.emitPeers();
+        return;
+      }
+    }
+  };
+
+  private handleSignal = async (data: {
+    channelId: string;
+    fromSocketId: string;
+    fromUserId: string;
+    payload: any;
+  }) => {
+    if (data.channelId !== this.channelId) return;
+    let peer = this.peers.get(data.fromSocketId);
+    if (!peer) peer = this.createPeer(data.fromSocketId, data.fromUserId);
+    const pc = peer.pc;
+    const p = data.payload;
+
+    try {
+      if (p?.type === 'offer') {
+        // perfect-negotiation lite: if we are also making an offer, the
+        // glare-resolution rule is "lower socketId wins". Here we just
+        // accept the remote offer when we aren't already mid-offer.
+        const isOffering = this.makingOffer.get(peer.socketId) ?? false;
+        const collision = isOffering || pc.signalingState !== 'stable';
+        if (collision) {
+          // Rollback our pending offer, THEN apply the remote offer.
+          // (Promise.all would race the two; rollback must complete first.)
+          try {
+            await pc.setLocalDescription({ type: 'rollback' } as RTCSessionDescriptionInit);
+          } catch {
+            /* some browsers throw if not in have-local-offer; that's fine */
+          }
+          await pc.setRemoteDescription(new RTCSessionDescription(p));
+        } else {
+          await pc.setRemoteDescription(new RTCSessionDescription(p));
+        }
+        // Drain any ICE candidates that arrived while setRemoteDescription
+        // was awaited — they would have been queued in pendingCandidates.
+        await this.drainPendingCandidates(peer);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        this.socket.emit('call:signal', {
+          channelId: this.channelId,
+          toSocketId: data.fromSocketId,
+          callToken: this.callToken,
+          payload: { type: 'answer', sdp: answer.sdp },
+        });
+      } else if (p?.type === 'answer') {
+        if (pc.signalingState === 'have-local-offer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(p));
+          // Drain candidates queued before the answer was processed.
+          await this.drainPendingCandidates(peer);
+        }
+      } else if (p?.candidate) {
+        if (pc.remoteDescription) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(p.candidate));
+          } catch {
+            /* ignore stale/invalid candidates */
+          }
+        } else {
+          // Remote description not yet applied — queue and apply after setRemoteDescription.
+          // Without this, 'await setRemoteDescription' above yields the microtask queue,
+          // allowing subsequent socket events to call addIceCandidate before remoteDescription
+          // is set, causing it to throw and silently drop the candidate.
+          peer.pendingCandidates.push(p.candidate);
+        }
+      }
+    } catch (err) {
+      console.warn('signal error', err);
+    }
+  };
+
+  private async drainPendingCandidates(peer: Peer) {
+    const queued = peer.pendingCandidates.splice(0);
+    for (const c of queued) {
+      try {
+        await peer.pc.addIceCandidate(new RTCIceCandidate(c));
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  private createPeer(socketId: string, userId: string): Peer {
+    const existing = this.peers.get(socketId);
+    if (existing) return existing;
+    const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+    const peer: Peer = {
+      socketId,
+      userId,
+      pc,
+      streams: new Map(),
+      pendingScreenIds: new Set(),
+      unmatchedScreens: 0,
+      pendingCandidates: [],
+      iceRestartAttempts: 0,
+    };
+    // drain any screen-on events queued before this peer existed
+    const queued = this.pendingScreensBySocketId.get(socketId);
+    if (queued) {
+      for (const id of queued) peer.pendingScreenIds.add(id);
+      peer.unmatchedScreens += queued.size;
+      this.pendingScreensBySocketId.delete(socketId);
+    }
+    this.peers.set(socketId, peer);
+
+    if (this.localStream) {
+      for (const track of this.localStream.getTracks()) pc.addTrack(track, this.localStream);
+    }
+    if (this.screenStream) {
+      for (const track of this.screenStream.getTracks()) pc.addTrack(track, this.screenStream);
+    }
+
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate && this.channelId) {
+        this.socket.emit('call:signal', {
+          channelId: this.channelId,
+          toSocketId: socketId,
+          callToken: this.callToken,
+          payload: { candidate: ev.candidate.toJSON() },
+        });
+      }
+    };
+
+    pc.ontrack = (ev) => {
+      const stream = ev.streams[0];
+      if (!stream) return;
+
+      // existing stream? just maybe upgrade kind, don't reclassify
+      if (peer.streams.has(stream.id)) {
+        const rs = peer.streams.get(stream.id)!;
+        if (rs.kind !== 'screen' && peer.pendingScreenIds.has(stream.id)) {
+          rs.kind = 'screen';
+          peer.pendingScreenIds.delete(stream.id);
+          peer.unmatchedScreens = Math.max(0, peer.unmatchedScreens - 1);
+        }
+        this.emitPeers();
+        return;
+      }
+
+      let kind: StreamKind;
+      if (peer.pendingScreenIds.has(stream.id)) {
+        kind = 'screen';
+        peer.pendingScreenIds.delete(stream.id);
+        peer.unmatchedScreens = Math.max(0, peer.unmatchedScreens - 1);
+      } else if (peer.unmatchedScreens > 0 && peer.streams.size > 0) {
+        // fallback: msid didn't propagate but we know this peer is sharing AND
+        // we already have their camera stream. Treat this new stream as screen.
+        kind = 'screen';
+        peer.unmatchedScreens -= 1;
+      } else {
+        kind = 'camera';
+      }
+
+      peer.streams.set(stream.id, { streamId: stream.id, stream, kind });
+      stream.addEventListener('removetrack', () => {
+        if (stream.getTracks().length === 0) {
+          peer.streams.delete(stream.id);
+          this.emitPeers();
+        }
+      });
+      this.emitPeers();
+    };
+
+    pc.onnegotiationneeded = async () => {
+      // we drive negotiation manually after add/removeTrack to keep ordering
+      // predictable. The browser may still fire this; we ignore unless we are
+      // currently the polite side and not already negotiating.
+    };
+
+    pc.onconnectionstatechange = () => {
+      // Emit on every state transition so the UI reflects 'connecting' →
+      // 'connected' → 'failed' in real time.
+      this.emitPeers();
+
+      const state = pc.connectionState;
+
+      if (state === 'connected') {
+        // Connection (re)established — reset restart counter and clear any
+        // pending restart timer.
+        peer.iceRestartAttempts = 0;
+        if (peer.iceRestartTimer !== undefined) {
+          clearTimeout(peer.iceRestartTimer);
+          peer.iceRestartTimer = undefined;
+        }
+      } else if (state === 'disconnected') {
+        // Transient drop (network blip, TURN allocation expiry, background tab).
+        // Wait 4 s before restarting — many disconnections recover on their own.
+        if (peer.iceRestartTimer === undefined && peer.iceRestartAttempts < 3) {
+          peer.iceRestartTimer = setTimeout(() => {
+            peer.iceRestartTimer = undefined;
+            if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+              this.attemptIceRestart(peer);
+            }
+          }, 4000);
+        }
+      } else if (state === 'failed') {
+        // Hard failure — restart immediately (up to 3 times total).
+        if (peer.iceRestartTimer !== undefined) {
+          clearTimeout(peer.iceRestartTimer);
+          peer.iceRestartTimer = undefined;
+        }
+        if (peer.iceRestartAttempts < 3) {
+          this.attemptIceRestart(peer);
+        }
+      }
+    };
+
+    return peer;
+  }
+
+  private async makeOffer(peer: Peer) {
+    if (!this.channelId) return;
+    this.makingOffer.set(peer.socketId, true);
+    try {
+      const offer = await peer.pc.createOffer();
+      await peer.pc.setLocalDescription(offer);
+      this.socket.emit('call:signal', {
+        channelId: this.channelId,
+        toSocketId: peer.socketId,
+        callToken: this.callToken,
+        payload: { type: 'offer', sdp: offer.sdp },
+      });
+    } catch (err) {
+      console.warn('makeOffer error', err);
+    } finally {
+      this.makingOffer.set(peer.socketId, false);
+    }
+  }
+
+  // ICE restart — creates a new offer with iceRestart:true to get fresh TURN
+  // candidates. Fixes calls dropping when TURN allocations expire (~10-15 min
+  // on most free-tier servers) or when a transient network blip kills the relay.
+  private async attemptIceRestart(peer: Peer) {
+    if (!this.channelId || !this.callToken) return;
+    peer.iceRestartAttempts++;
+    console.info(`[webrtc] ICE restart attempt ${peer.iceRestartAttempts} for ${peer.socketId}`);
+    try {
+      const offer = await peer.pc.createOffer({ iceRestart: true });
+      await peer.pc.setLocalDescription(offer);
+      this.socket.emit('call:signal', {
+        channelId: this.channelId,
+        toSocketId: peer.socketId,
+        callToken: this.callToken,
+        payload: { type: 'offer', sdp: offer.sdp! },
+      });
+    } catch (err) {
+      console.warn('[webrtc] ICE restart failed', err);
+    }
+  }
+
+  private emitPeers() {
+    const snapshots: PeerSnapshot[] = Array.from(this.peers.values()).map((p) => ({
+      socketId: p.socketId,
+      userId: p.userId,
+      streams: Array.from(p.streams.values()),
+      connectionState: p.pc.connectionState,
+    }));
+    this.events.onPeers(snapshots);
+  }
+}

@@ -1,0 +1,437 @@
+const PBKDF2_ITERS = 200_000;
+const SESSION_KEY_PREFIX = 'recline.aeskey.';
+
+// ── RUM custom action helper ──────────────────────────────────────────────────
+// Uses window.DD_RUM injected by the RUM SDK — no import needed, safe to call
+// even before the SDK initialises (just a no-op until it's ready).
+function rumTrack(name: string, context: Record<string, unknown>) {
+  try { (window as any).DD_RUM?.addAction(name, context); } catch { /* RUM not ready */ }
+}
+
+function toB64(bytes: ArrayBuffer | Uint8Array): string {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let s = '';
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return btoa(s);
+}
+
+function fromB64(b64: string): ArrayBuffer {
+  const s = atob(b64);
+  const buf = new ArrayBuffer(s.length);
+  const u8 = new Uint8Array(buf);
+  for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
+  return buf;
+}
+
+export async function deriveServerKey(
+  passphrase: string,
+  serverId: string,
+  kdfSalt?: string | null, // base64 random salt from the server (#11); null/undefined = legacy
+): Promise<CryptoKey> {
+  const t0 = performance.now();
+  const enc = new TextEncoder();
+  const material = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(passphrase),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey'],
+  );
+  // Prefer the random per-server salt stored on the server (breaks rainbow tables).
+  // Fall back to the stable deterministic salt for servers created before this change.
+  const salt = kdfSalt ? fromB64(kdfSalt) : enc.encode(`recline:v1:${serverId}`);
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt,
+      iterations: PBKDF2_ITERS,
+      hash: 'SHA-256',
+    },
+    material,
+    { name: 'AES-GCM', length: 256 },
+    true,                // extractable so the key can be persisted to sessionStorage
+    ['encrypt', 'decrypt'],
+  );
+  rumTrack('encryption.key_exchange', { duration_ms: performance.now() - t0, algorithm: 'PBKDF2-AES-GCM-256' });
+  return key;
+}
+
+export async function encryptText(key: CryptoKey, plaintext: string): Promise<{ ciphertext: string; nonce: string }> {
+  const t0 = performance.now();
+  try {
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const enc = new TextEncoder();
+    const buf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, enc.encode(plaintext));
+    rumTrack('encryption.encrypt', { duration_ms: performance.now() - t0, algorithm: 'AES-GCM-256' });
+    return { ciphertext: toB64(buf), nonce: toB64(nonce) };
+  } catch (e) {
+    rumTrack('encryption.error', { operation: 'encrypt', error: String(e) });
+    throw e;
+  }
+}
+
+export async function decryptText(key: CryptoKey, ciphertext: string, nonce: string): Promise<string> {
+  const t0 = performance.now();
+  try {
+    const buf = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: fromB64(nonce) },
+      key,
+      fromB64(ciphertext),
+    );
+    rumTrack('encryption.decrypt', { duration_ms: performance.now() - t0, algorithm: 'AES-GCM-256' });
+    return new TextDecoder().decode(buf);
+  } catch (e) {
+    rumTrack('encryption.error', { operation: 'decrypt', error: String(e) });
+    throw e;
+  }
+}
+
+// ── ECDH P-256 DM key exchange ────────────────────────────────────────────────
+// Key pair: generated once and stored in IndexedDB.
+//   • Public key:  extractable (must be exported as JWK and uploaded to the server)
+//   • Private key: NON-extractable — stored as a live CryptoKey object in IndexedDB.
+//     An XSS attacker on the same origin can still USE the key (call deriveKey) but
+//     cannot read or exfiltrate the raw key material to another origin.
+// DM AES-GCM key: ECDH shared secret → HKDF-SHA256 → AES-GCM-256.
+// Per-conversation key is cached in memory by dmChannelId.
+
+const DM_AESKEY_PREFIX       = 'recline.dm.aeskey.';
+// History of previous private keys (max 5) — kept so old messages can still be decrypted
+// after a key rotation. Stored as CryptoKey objects in IndexedDB, newest first.
+const DM_KEYPAIR_HISTORY_MAX = 5;
+
+// ── IndexedDB key storage ─────────────────────────────────────────────────────
+// CryptoKey objects can be stored directly in IndexedDB — the browser preserves
+// the non-extractable flag across storage round-trips. This replaces the old
+// localStorage-JWK approach which exposed raw key material to any script on the origin.
+
+const IDB_NAME    = 'recline.keys';
+const IDB_VERSION = 1;
+const IDB_STORE   = 'keypairs';
+
+function openKeyDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = (e.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE);
+      }
+    };
+    req.onsuccess  = (e) => resolve((e.target as IDBOpenDBRequest).result);
+    req.onerror    = () => reject(req.error);
+  });
+}
+
+async function idbGet<T>(key: string): Promise<T | null> {
+  const db = await openKeyDb();
+  return new Promise((resolve, reject) => {
+    const tx  = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess  = () => resolve((req.result as T) ?? null);
+    req.onerror    = () => reject(req.error);
+    tx.oncomplete  = () => db.close();
+  });
+}
+
+async function idbSet(key: string, value: unknown): Promise<void> {
+  const db = await openKeyDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(value, key);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror    = () => { reject(tx.error); };
+  });
+}
+
+async function idbDelete(key: string): Promise<void> {
+  const db = await openKeyDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror    = () => reject(tx.error);
+  });
+}
+
+async function idbClear(): Promise<void> {
+  const db = await openKeyDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).clear();
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror    = () => reject(tx.error);
+  });
+}
+
+export async function generateDmKeyPair(): Promise<CryptoKeyPair> {
+  // Generate with extractable:true so we can export the public key JWK,
+  // then re-import the private key as non-extractable before storing.
+  const raw = await crypto.subtle.generateKey(
+    { name: 'ECDH', namedCurve: 'P-256' },
+    true,
+    ['deriveKey'],
+  );
+  // Re-import private key as non-extractable — raw key bytes are never stored.
+  const privJwk = await crypto.subtle.exportKey('jwk', raw.privateKey);
+  const privateKey = await crypto.subtle.importKey(
+    'jwk', privJwk,
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false, // NON-extractable
+    ['deriveKey'],
+  );
+  return { publicKey: raw.publicKey, privateKey };
+}
+
+/** Export the public key as a JWK string suitable for the server. */
+export async function exportPublicKeyJwk(publicKey: CryptoKey): Promise<string> {
+  const jwk = await crypto.subtle.exportKey('jwk', publicKey);
+  return JSON.stringify(jwk);
+}
+
+/** Persist the key pair to IndexedDB. Private key is stored as a CryptoKey (non-extractable). */
+export async function saveDmKeyPair(pair: CryptoKeyPair): Promise<void> {
+  try {
+    // Export the public key JWK for re-import (needed on load)
+    const pubJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+    await idbSet('current', { pubJwk, privateKey: pair.privateKey });
+  } catch { /* non-fatal */ }
+}
+
+/** Load a previously saved key pair from IndexedDB. Returns null if none. */
+export async function loadDmKeyPair(): Promise<CryptoKeyPair | null> {
+  try {
+    // Migrate from old localStorage JWK format if present
+    const legacyRaw = localStorage.getItem('recline.dm.keypair');
+    if (legacyRaw) {
+      const { pub, priv } = JSON.parse(legacyRaw);
+      const [publicKey, privateKey] = await Promise.all([
+        crypto.subtle.importKey('jwk', pub, { name: 'ECDH', namedCurve: 'P-256' }, true, []),
+        crypto.subtle.importKey('jwk', priv, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']),
+      ]);
+      const pair = { publicKey, privateKey };
+      await saveDmKeyPair(pair);
+      localStorage.removeItem('recline.dm.keypair');
+      localStorage.removeItem('recline.dm.keypair.history');
+      return pair;
+    }
+
+    const stored = await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }>('current');
+    if (!stored) return null;
+    const publicKey = await crypto.subtle.importKey(
+      'jwk', stored.pubJwk,
+      { name: 'ECDH', namedCurve: 'P-256' },
+      true, [],
+    );
+    return { publicKey, privateKey: stored.privateKey };
+  } catch {
+    await idbDelete('current').catch(() => {});
+    return null;
+  }
+}
+
+/** Import a peer's public key from the JWK string stored on the server. */
+export async function importPeerPublicKey(jwkString: string): Promise<CryptoKey> {
+  const jwk = JSON.parse(jwkString);
+  return crypto.subtle.importKey('jwk', jwk, { name: 'ECDH', namedCurve: 'P-256' }, true, []);
+}
+
+/**
+ * Derive the AES-GCM-256 key for a DM channel using ECDH + HKDF.
+ * HKDF info includes the channel ID so each DM channel gets a distinct key
+ * even if two users share multiple DMs (impossible in practice due to the UNIQUE
+ * constraint, but good hygiene regardless).
+ */
+export async function deriveDmKey(
+  myPrivateKey: CryptoKey,
+  peerPublicKey: CryptoKey,
+  dmChannelId: string,
+): Promise<CryptoKey> {
+  const t0 = performance.now();
+  const enc = new TextEncoder();
+
+  // ECDH → raw shared secret
+  const sharedSecret = await crypto.subtle.deriveKey(
+    { name: 'ECDH', public: peerPublicKey },
+    myPrivateKey,
+    { name: 'HKDF' },  // HKDF as the "derived key" algorithm
+    false,
+    ['deriveKey'],
+  );
+
+  // HKDF → AES-GCM-256
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: enc.encode('recline:dm:v1'),
+      info: enc.encode(`dm:${dmChannelId}`),
+    },
+    sharedSecret,
+    { name: 'AES-GCM', length: 256 },
+    false, // DM AES key: non-extractable (never needs to leave memory)
+    ['encrypt', 'decrypt'],
+  );
+  rumTrack('encryption.key_exchange', { duration_ms: performance.now() - t0, algorithm: 'ECDH-HKDF-AES-GCM-256' });
+  return key;
+}
+
+const dmMemoryKeys = new Map<string, CryptoKey>();
+
+export function cacheDmKey(dmChannelId: string, key: CryptoKey) {
+  // DM AES-GCM keys are derived via HKDF and imported as non-extractable.
+  // They live in memory only — no sessionStorage export is attempted because
+  // non-extractable keys cannot be serialised and any XSS would find nothing to steal.
+  // Cost: the key must be re-derived from the ECDH shared secret on each page load.
+  dmMemoryKeys.set(dmChannelId, key);
+}
+
+export function getCachedDmKey(dmChannelId: string): CryptoKey | undefined {
+  return dmMemoryKeys.get(dmChannelId);
+}
+
+export async function importDmKeyFromSession(dmChannelId: string): Promise<CryptoKey | null> {
+  try {
+    const raw = sessionStorage.getItem(DM_AESKEY_PREFIX + dmChannelId);
+    if (!raw) return null;
+    const jwk = JSON.parse(raw);
+    return await crypto.subtle.importKey('jwk', jwk, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+  } catch {
+    sessionStorage.removeItem(DM_AESKEY_PREFIX + dmChannelId);
+    return null;
+  }
+}
+
+export function clearDmKey(dmChannelId: string) {
+  dmMemoryKeys.delete(dmChannelId);
+  sessionStorage.removeItem(DM_AESKEY_PREFIX + dmChannelId);
+}
+
+export function clearAllDmKeys() {
+  dmMemoryKeys.clear();
+  const toDelete: string[] = [];
+  for (let i = 0; i < sessionStorage.length; i++) {
+    const k = sessionStorage.key(i);
+    if (k?.startsWith(DM_AESKEY_PREFIX)) toDelete.push(k);
+  }
+  toDelete.forEach((k) => sessionStorage.removeItem(k));
+  // Wipe all ECDH keypairs from IndexedDB on logout so a shared-device scenario
+  // cannot recover keys after the user signs out. (#H-6)
+  idbClear().catch(() => {});
+  // Also clear any legacy localStorage keys that survived migration
+  localStorage.removeItem('recline.dm.keypair');
+  localStorage.removeItem('recline.dm.keypair.history');
+}
+
+// ── Key rotation ──────────────────────────────────────────────────────────────
+// Generates a brand-new ECDH key pair and archives the current one to history
+// (up to DM_KEYPAIR_HISTORY_MAX previous keys kept for decrypting old messages).
+// The new keypair becomes the "current" one; the caller must upload the new
+// public key to the server via api.registerPublicKey() to complete rotation.
+
+/** Archive the current keypair to history (called before rotation). */
+export async function archiveCurrentKeyPair(): Promise<void> {
+  try {
+    const current = await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }>('current');
+    if (!current) return;
+    const history = (await idbGet<typeof current[]>('history')) ?? [];
+    history.unshift(current); // newest first
+    if (history.length > DM_KEYPAIR_HISTORY_MAX) history.splice(DM_KEYPAIR_HISTORY_MAX);
+    await idbSet('history', history);
+  } catch { /* non-fatal */ }
+}
+
+/**
+ * Generate a new DM ECDH key pair, archive the old one, and persist the new one.
+ * After calling this, upload the new public key with api.registerPublicKey() and
+ * call clearAllDmKeys() to flush derived AES key caches.
+ */
+export async function rotateDmKeyPair(): Promise<CryptoKeyPair> {
+  await archiveCurrentKeyPair();
+  const pair = await generateDmKeyPair();
+  await saveDmKeyPair(pair);
+  return pair;
+}
+
+/** Load all historical (pre-rotation) key pairs from IndexedDB. */
+export async function loadDmKeyHistory(): Promise<CryptoKeyPair[]> {
+  try {
+    const entries = (await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }[]>('history')) ?? [];
+    const pairs: CryptoKeyPair[] = [];
+    for (const { pubJwk, privateKey } of entries) {
+      try {
+        const publicKey = await crypto.subtle.importKey(
+          'jwk', pubJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, [],
+        );
+        pairs.push({ publicKey, privateKey });
+      } catch { /* corrupt entry — skip */ }
+    }
+    return pairs;
+  } catch { return []; }
+}
+
+const memoryKeys = new Map<string, CryptoKey>();
+
+// ── sessionStorage persistence ────────────────────────────────────────────────
+// Keys are exported as JWK and stored in sessionStorage so they survive page
+// refreshes within the same browser session without re-prompting the user.
+// sessionStorage is tab-local and cleared when the tab/window closes — acceptable
+// for a session-scoped secret. Never written to localStorage.
+
+async function exportKeyToSession(serverId: string, key: CryptoKey): Promise<void> {
+  try {
+    const jwk = await crypto.subtle.exportKey('jwk', key);
+    sessionStorage.setItem(SESSION_KEY_PREFIX + serverId, JSON.stringify(jwk));
+  } catch { /* export failures are non-fatal */ }
+}
+
+export async function importKeyFromSession(serverId: string): Promise<CryptoKey | null> {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY_PREFIX + serverId);
+    if (!raw) return null;
+    const jwk = JSON.parse(raw);
+    return await crypto.subtle.importKey(
+      'jwk',
+      jwk,
+      { name: 'AES-GCM' },
+      false, // non-extractable — XSS cannot re-export the key from the session cache
+      ['encrypt', 'decrypt'],
+    );
+  } catch {
+    sessionStorage.removeItem(SESSION_KEY_PREFIX + serverId);
+    return null;
+  }
+}
+
+function removeKeyFromSession(serverId: string) {
+  sessionStorage.removeItem(SESSION_KEY_PREFIX + serverId);
+}
+
+function clearSessionKeys() {
+  const toDelete: string[] = [];
+  for (let i = 0; i < sessionStorage.length; i++) {
+    const k = sessionStorage.key(i);
+    if (k?.startsWith(SESSION_KEY_PREFIX)) toDelete.push(k);
+  }
+  toDelete.forEach((k) => sessionStorage.removeItem(k));
+}
+
+export function cacheKey(serverId: string, key: CryptoKey) {
+  memoryKeys.set(serverId, key);
+  // Persist to sessionStorage so the key survives page refreshes without
+  // re-prompting the user for their passphrase. sessionStorage is tab-local
+  // and cleared when the tab closes — acceptable session-scoped storage.
+  exportKeyToSession(serverId, key);
+}
+export function getCachedKey(serverId: string): CryptoKey | undefined {
+  return memoryKeys.get(serverId);
+}
+export function clearKey(serverId: string) {
+  memoryKeys.delete(serverId);
+  removeKeyFromSession(serverId);
+}
+/** Clear ALL cached keys — call on server switch to avoid stale keys in memory (#27). */
+export function clearAllKeys() {
+  memoryKeys.clear();
+  clearSessionKeys();
+}
