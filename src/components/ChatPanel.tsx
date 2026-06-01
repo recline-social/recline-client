@@ -19,7 +19,7 @@ type Props = {
   onDelete: (id: string) => Promise<void>;
   onEdit: (id: string, newText: string) => Promise<void>;
   onReaction: (messageId: string, emoji: string) => void;
-  onSpark?: (messageId: string, amount: number) => void;
+  onSpark?: (messageId: string, amount: number) => Promise<void>;
   onReport?: (messageId: string, senderId: string, reason: string, note: string) => Promise<void>;
   hasMore?: boolean;
   onLoadMore?: () => Promise<void>;

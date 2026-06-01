@@ -21,7 +21,7 @@ type Props = {
   onReport?: () => void;
   onReply?: (msg: DecodedMessage) => void;
   onClickUser?: (userId: string) => void;
-  onSpark?: (messageId: string, amount: number) => void;
+  onSpark?: (messageId: string, amount: number) => Promise<void>;
   members?: Record<string, Member>;
   meId?: string;
   sparksBalance?: number;
@@ -48,7 +48,7 @@ function fmtDayTime(ts: number) {
 
 // ── Spark picker — portal so it escapes overflow/stacking context of message row ──
 function SparkPickerPortal({
-  anchorRef, sparksBalance, sparkCustom, onCustomChange, sparkSending, onSend, onClose,
+  anchorRef, sparksBalance, sparkCustom, onCustomChange, sparkSending, onSend, onClose, error,
 }: {
   anchorRef: React.RefObject<HTMLDivElement>;
   sparksBalance?: number;
@@ -57,6 +57,7 @@ function SparkPickerPortal({
   sparkSending: boolean;
   onSend: (amount: number) => void;
   onClose: () => void;
+  error?: string | null;
 }) {
   const popRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ top: 0, right: 0 });
@@ -204,8 +205,15 @@ function SparkPickerPortal({
         </button>
       </div>
 
+      {/* Server error */}
+      {error && (
+        <p style={{ fontSize:11, marginTop:8, color:'#f87171', background:'rgba(248,113,113,0.08)', border:'1px solid rgba(248,113,113,0.2)', borderRadius:8, padding:'6px 8px' }}>
+          ✕ {error}
+        </p>
+      )}
+
       {/* Validation hint */}
-      {sparkCustom && (
+      {sparkCustom && !error && (
         <p style={{ fontSize:10, marginTop:6, color: !customValid ? '#f87171' : !customAffordable ? '#f87171' : 'rgba(255,255,255,0.3)' }}>
           {!customValid ? 'Enter 1–500' : !customAffordable ? 'Not enough Sparks' : `Costs ${customVal} ✦`}
         </p>
@@ -225,6 +233,7 @@ export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, 
   const [sparkCustom, setSparkCustom] = useState('');
   const [sparkSending, setSparkSending] = useState(false);
   const [sparkPulsing, setSparkPulsing] = useState(false);
+  const [sparkError, setSparkError] = useState<string | null>(null);
   const editRef      = useRef<HTMLTextAreaElement>(null);
   const pickerRef    = useRef<HTMLDivElement>(null);
   const sparkRef     = useRef<HTMLDivElement>(null);
@@ -232,16 +241,23 @@ export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, 
   const animRowRef   = useRef<HTMLDivElement>(null);
   const animCooldown = useRef<number>(0); // timestamp of last replay — prevents spaz loop
 
-  function handleSendSpark(amount: number) {
+  async function handleSendSpark(amount: number) {
     if (!onSpark || sparkSending) return;
     if (amount < 1 || amount > 500) return;
     if (sparksBalance !== undefined && amount > sparksBalance) return;
     setSparkSending(true);
-    onSpark(msg.id, amount);
-    setSparkOpen(false);
-    setSparkCustom('');
-    // Brief delay to let state propagate before re-enabling
-    setTimeout(() => setSparkSending(false), 1000);
+    setSparkError(null);
+    try {
+      await onSpark(msg.id, amount);
+      // Success — close picker and clear
+      setSparkOpen(false);
+      setSparkCustom('');
+    } catch (err: any) {
+      // Keep picker open, show the error so the user knows what happened
+      setSparkError(err?.message ?? 'failed — try again');
+    } finally {
+      setSparkSending(false);
+    }
   }
 
   // Trigger particle effects on mount for particle-type animations
@@ -565,7 +581,8 @@ export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, 
                   onCustomChange={setSparkCustom}
                   sparkSending={sparkSending}
                   onSend={handleSendSpark}
-                  onClose={() => { setSparkOpen(false); setSparkCustom(''); }}
+                  onClose={() => { setSparkOpen(false); setSparkCustom(''); setSparkError(null); }}
+                  error={sparkError}
                 />,
                 document.body,
               )}

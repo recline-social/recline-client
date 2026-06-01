@@ -1385,24 +1385,26 @@ export default function App() {
     socketRef.current?.emit('reaction:toggle', { messageId, emoji });
   }
 
-  function handleSparkMessage(messageId: string, amount: number) {
-    const socket = socketRef.current;
-    if (!socket) return;
-    // Find the channel for this message to pass channelId
-    let channelId: string | null = null;
-    for (const [cid, state] of Object.entries(channelMsgs)) {
-      if (state.messages.some((m) => m.id === messageId)) { channelId = cid; break; }
-    }
-    if (!channelId) return;
-    socket.emit(
-      'message:spark',
-      { messageId, channelId, amount },
-      (resp: { ok: boolean; newBalance?: number; error?: string } | undefined) => {
-        if (resp?.ok && typeof resp.newBalance === 'number') {
-          setSparksBalance(resp.newBalance);
-        }
-      },
-    );
+  function handleSparkMessage(messageId: string, amount: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const socket = socketRef.current;
+      if (!socket) { reject(new Error('not connected')); return; }
+      // The spark button only renders for messages in the active channel —
+      // use activeChannelId directly rather than searching all of channelMsgs,
+      // which could silently fail if the closure captures stale state.
+      const channelId = activeChannelId;
+      if (!channelId) { reject(new Error('no active channel')); return; }
+      socket.emit(
+        'message:spark',
+        { messageId, channelId, amount },
+        (resp: { ok: boolean; newBalance?: number; error?: string } | undefined) => {
+          if (!resp) { reject(new Error('no response from server')); return; }
+          if (!resp.ok) { reject(new Error(resp.error ?? 'spark failed')); return; }
+          if (typeof resp.newBalance === 'number') setSparksBalance(resp.newBalance);
+          resolve();
+        },
+      );
+    });
   }
 
   async function createServer(name: string, passphrase: string) {
