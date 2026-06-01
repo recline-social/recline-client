@@ -9,6 +9,8 @@ import { ScreenShareDialog } from './ScreenShareDialog';
 
 type Tile = {
   key: string;
+  /** null for self-tiles — no volume control for your own audio */
+  socketId: string | null;
   userId: string;
   name: string;
   stream: MediaStream | null;
@@ -143,6 +145,9 @@ type Props = {
   peers: PeerSnapshot[];
   deafOn: boolean;
   onToggleDeafen: (v: boolean) => void;
+  /** Per-peer volume map: socketId → 0–1. Missing key = 1.0. */
+  peerVolumes: Record<string, number>;
+  onSetVolume: (socketId: string, vol: number) => void;
   /** Mobile only — opens the channel list drawer */
   onOpenSidebar?: () => void;
 };
@@ -162,6 +167,8 @@ export function CallView({
   peers,
   deafOn,
   onToggleDeafen,
+  peerVolumes,
+  onSetVolume,
   onOpenSidebar,
 }: Props) {
   const [camOn, setCamOn] = useState(false);
@@ -169,6 +176,8 @@ export function CallView({
   const [sharing, setSharing] = useState(false);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // key of the tile currently pinned to the featured (large) position — null = auto layout
+  const [pinnedKey, setPinnedKey] = useState<string | null>(null);
 
   const speaking = useSpeakingDetection(localStream, me.id, peers);
 
@@ -237,6 +246,7 @@ export function CallView({
     if (inCall) {
       t.push({
         key: 'self-cam',
+        socketId: null,
         userId: me.id,
         name: members[me.id]?.displayName ?? me.displayName,
         stream: localStream,
@@ -247,6 +257,7 @@ export function CallView({
       if (localScreen) {
         t.push({
           key: 'self-screen',
+          socketId: null,
           userId: me.id,
           name: (members[me.id]?.displayName ?? me.displayName) + ' — screen',
           stream: localScreen,
@@ -261,6 +272,7 @@ export function CallView({
         const name = members[peer.userId]?.displayName ?? 'user';
         t.push({
           key: `${peer.socketId}:${rs.streamId}`,
+          socketId: peer.socketId,
           userId: peer.userId,
           name: rs.kind === 'screen' ? `${name} — screen` : name,
           stream: rs.stream,
@@ -273,6 +285,7 @@ export function CallView({
       if (peer.streams.length === 0) {
         t.push({
           key: `${peer.socketId}:placeholder`,
+          socketId: peer.socketId,
           userId: peer.userId,
           name: members[peer.userId]?.displayName ?? 'user',
           stream: null,
@@ -286,8 +299,12 @@ export function CallView({
     return t;
   }, [inCall, localStream, localScreen, peers, me, members, camOn]);
 
-  const screenTiles = tiles.filter((t) => t.kind === 'screen');
-  const camTiles = tiles.filter((t) => t.kind === 'camera');
+  // Auto-clear pin when the pinned peer leaves the call
+  useEffect(() => {
+    if (pinnedKey && !tiles.some((t) => t.key === pinnedKey)) {
+      setPinnedKey(null);
+    }
+  }, [tiles, pinnedKey]);
 
   return (
     <div className="flex-1 min-w-0 flex flex-col bg-ink-900/40">
@@ -345,7 +362,14 @@ export function CallView({
         ) : (
           /* In call: must fill the remaining height cleanly — no scroll wrapper */
           <div className="flex-1 min-h-0 p-2 md:p-4 flex flex-col">
-            <CallStage screenTiles={screenTiles} camTiles={camTiles} speaking={speaking} />
+            <CallStage
+              allTiles={tiles}
+              pinnedKey={pinnedKey}
+              onPin={setPinnedKey}
+              speaking={speaking}
+              peerVolumes={peerVolumes}
+              onSetVolume={onSetVolume}
+            />
           </div>
         )}
       </div>
@@ -497,7 +521,61 @@ function PreJoin({
   );
 }
 
-function CallStage({ screenTiles, camTiles, speaking }: { screenTiles: Tile[]; camTiles: Tile[]; speaking: Record<string, boolean> }) {
+function CallStage({
+  allTiles,
+  pinnedKey,
+  onPin,
+  speaking,
+  peerVolumes,
+  onSetVolume,
+}: {
+  allTiles: Tile[];
+  pinnedKey: string | null;
+  onPin: (key: string | null) => void;
+  speaking: Record<string, boolean>;
+  peerVolumes: Record<string, number>;
+  onSetVolume: (socketId: string, vol: number) => void;
+}) {
+  const screenTiles = allTiles.filter((t) => t.kind === 'screen');
+  const camTiles    = allTiles.filter((t) => t.kind === 'camera');
+
+  // Helper — props shared between every Tile render
+  const tp = (t: Tile, variant: 'grid' | 'primary' | 'strip') => ({
+    key: t.key,
+    tile: t,
+    variant,
+    isSpeaking: variant !== 'primary' ? !!speaking[t.userId] : false,
+    isPinned: pinnedKey === t.key,
+    onPin: () => onPin(pinnedKey === t.key ? null : t.key),
+    volume: t.socketId ? (peerVolumes[t.socketId] ?? 1) : 1,
+    onSetVolume: t.socketId ? (vol: number) => onSetVolume(t.socketId!, vol) : undefined,
+  });
+
+  // ── Pinned layout: chosen tile fills the main area, rest go to strip ──────
+  if (pinnedKey) {
+    const pinned = allTiles.find((t) => t.key === pinnedKey);
+    const rest   = allTiles.filter((t) => t.key !== pinnedKey);
+    if (pinned) {
+      return (
+        <div className="flex-1 min-h-0 flex flex-col gap-2 md:gap-3">
+          <div className="flex-1 min-h-0">
+            <Tile {...tp(pinned, 'primary')} />
+          </div>
+          {rest.length > 0 && (
+            <div className="flex gap-2 overflow-x-auto pb-1 shrink-0">
+              {rest.map((t) => (
+                <div key={t.key} className="w-32 md:w-44 shrink-0">
+                  <Tile {...tp(t, 'strip')} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+  }
+
+  // ── Default layout ─────────────────────────────────────────────────────────
   if (screenTiles.length === 0) {
     const cols = camTiles.length <= 1 ? 1 : camTiles.length <= 4 ? 2 : 3;
     return (
@@ -506,9 +584,7 @@ function CallStage({ screenTiles, camTiles, speaking }: { screenTiles: Tile[]; c
           className="w-full max-w-5xl grid gap-3"
           style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
         >
-          {camTiles.map((t) => (
-            <Tile tile={t} key={t.key} isSpeaking={!!speaking[t.userId]} />
-          ))}
+          {camTiles.map((t) => <Tile {...tp(t, 'grid')} />)}
         </div>
       </div>
     );
@@ -519,14 +595,12 @@ function CallStage({ screenTiles, camTiles, speaking }: { screenTiles: Tile[]; c
         className="flex-1 min-h-0 grid gap-2 md:gap-3"
         style={{ gridTemplateColumns: `repeat(${screenTiles.length <= 1 ? 1 : 2}, minmax(0, 1fr))` }}
       >
-        {screenTiles.map((t) => (
-          <Tile tile={t} key={t.key} variant="primary" isSpeaking={false} />
-        ))}
+        {screenTiles.map((t) => <Tile {...tp(t, 'primary')} />)}
       </div>
       <div className="flex gap-2 overflow-x-auto pb-1 shrink-0">
         {camTiles.map((t) => (
           <div key={t.key} className="w-32 md:w-44 shrink-0">
-            <Tile tile={t} variant="strip" isSpeaking={!!speaking[t.userId]} />
+            <Tile {...tp(t, 'strip')} />
           </div>
         ))}
       </div>
@@ -534,7 +608,23 @@ function CallStage({ screenTiles, camTiles, speaking }: { screenTiles: Tile[]; c
   );
 }
 
-function Tile({ tile, variant = 'grid', isSpeaking = false }: { tile: Tile; variant?: 'grid' | 'primary' | 'strip'; isSpeaking?: boolean }) {
+function Tile({
+  tile,
+  variant = 'grid',
+  isSpeaking = false,
+  isPinned = false,
+  onPin,
+  volume = 1,
+  onSetVolume,
+}: {
+  tile: Tile;
+  variant?: 'grid' | 'primary' | 'strip';
+  isSpeaking?: boolean;
+  isPinned?: boolean;
+  onPin?: () => void;
+  volume?: number;
+  onSetVolume?: (vol: number) => void;
+}) {
   const vidRef = useRef<HTMLVideoElement>(null);
   const [hasVideo, setHasVideo] = useState(false);
 
@@ -574,22 +664,27 @@ function Tile({ tile, variant = 'grid', isSpeaking = false }: { tile: Tile; vari
   const cs = tile.connectionState;
   const isConnecting = !tile.isSelf && (cs === 'new' || cs === 'connecting');
   const isFailed = !tile.isSelf && cs === 'failed';
+  const isStrip = variant === 'strip';
 
   const baseClasses =
     variant === 'primary'
-      ? 'relative h-full w-full rounded-2xl overflow-hidden border border-white/5 bg-black'
-      : variant === 'strip'
-      ? 'relative aspect-video rounded-xl overflow-hidden border border-white/5 bg-ink-800/60'
-      : 'relative aspect-video rounded-2xl overflow-hidden border border-white/5 bg-ink-800/60';
+      ? 'group relative h-full w-full rounded-2xl overflow-hidden border border-white/5 bg-black'
+      : isStrip
+      ? 'group relative aspect-video rounded-xl overflow-hidden border border-white/5 bg-ink-800/60'
+      : 'group relative aspect-video rounded-2xl overflow-hidden border border-white/5 bg-ink-800/60';
 
   // mirror local camera; never mirror screen captures
   const mirror = tile.isSelf && tile.kind === 'camera';
 
-  const ringStyle = isFailed
+  const ringStyle = isPinned
+    ? '0 0 0 2px rgba(99,102,241,0.8), 0 0 14px rgba(99,102,241,0.25)'
+    : isFailed
     ? 'inset 0 0 0 2px rgba(239,68,68,0.5)'
     : isSpeaking
     ? '0 0 0 2px rgba(74,222,128,0.9), 0 0 16px rgba(74,222,128,0.35)'
     : `inset 0 0 0 1px ${c.ring}`;
+
+  const volPct = Math.round(volume * 100);
 
   return (
     <div
@@ -613,9 +708,65 @@ function Tile({ tile, variant = 'grid', isSpeaking = false }: { tile: Tile; vari
       />
       {!showVid && (
         <div className="absolute inset-0 grid place-items-center">
-          <Avatar name={tile.name} id={tile.userId} size={variant === 'strip' ? 'md' : 'lg'} isSelf={tile.isSelf} />
+          <Avatar name={tile.name} id={tile.userId} size={isStrip ? 'md' : 'lg'} isSelf={tile.isSelf} />
         </div>
       )}
+
+      {/* ── Hover controls overlay ─────────────────────────────────────────── */}
+      {/* Fades in on hover (desktop). Controls: volume slider + pin button.    */}
+      {/* Volume is hidden on strip variant (too narrow) and for self tiles.    */}
+      <div className="absolute top-0 left-0 right-0 flex items-center gap-2 px-2 py-1.5 bg-gradient-to-b from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10 pointer-events-none group-hover:pointer-events-auto">
+        {!tile.isSelf && !isStrip && onSetVolume && (
+          <div className="flex items-center gap-1.5 flex-1 min-w-0">
+            {/* Volume icon — adapts to level */}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 text-white/70">
+              {volPct === 0 ? (
+                <>
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                  <line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" />
+                </>
+              ) : volPct < 50 ? (
+                <>
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                </>
+              ) : (
+                <>
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+                </>
+              )}
+            </svg>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={volPct}
+              onChange={(e) => onSetVolume(Number(e.target.value) / 100)}
+              onClick={(e) => e.stopPropagation()}
+              className="flex-1 h-1 cursor-pointer rounded-full"
+              style={{ accentColor: '#818cf8' }}
+            />
+            <span className="text-[10px] text-white/50 w-7 text-right shrink-0">{volPct}%</span>
+          </div>
+        )}
+        {onPin && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onPin(); }}
+            title={isPinned ? 'Unpin' : 'Pin to focus'}
+            className={`ml-auto h-6 w-6 rounded-md grid place-items-center transition-colors shrink-0 ${
+              isPinned ? 'text-accent-violet' : 'text-white/60 hover:text-white'
+            }`}
+          >
+            {/* Pin icon */}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill={isPinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="17" x2="12" y2="22" />
+              <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
+            </svg>
+          </button>
+        )}
+      </div>
+
       {/* Connecting spinner overlay */}
       {isConnecting && (
         <div className="absolute inset-0 grid place-items-center pointer-events-none">
@@ -649,6 +800,15 @@ function Tile({ tile, variant = 'grid', isSpeaking = false }: { tile: Tile; vari
           )}
           <span className="truncate">{tile.name}{tile.isSelf && tile.kind === 'camera' && ' · you'}</span>
         </span>
+        {/* Pinned badge — always visible when tile is pinned */}
+        {isPinned && (
+          <span className="pill text-[10px] bg-accent-violet/20 text-accent-violet border-accent-violet/30 shrink-0">
+            <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+              <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
+            </svg>
+            pinned
+          </span>
+        )}
       </div>
     </div>
   );

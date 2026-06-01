@@ -61,7 +61,7 @@ import {
 // ── Persistent audio: keeps remote streams audible when CallView is not mounted ─
 const MSG_PAGE = 50; // messages per pagination page
 
-const AudioTrack: FC<{ stream: MediaStream; deafened?: boolean }> = ({ stream, deafened = false }) => {
+const AudioTrack: FC<{ stream: MediaStream; deafened?: boolean; volume?: number }> = ({ stream, deafened = false, volume = 1 }) => {
   const ref = useRef<HTMLAudioElement>(null);
   useEffect(() => {
     const el = ref.current;
@@ -79,6 +79,9 @@ const AudioTrack: FC<{ stream: MediaStream; deafened?: boolean }> = ({ stream, d
   useEffect(() => {
     if (ref.current) ref.current.muted = deafened;
   }, [deafened]);
+  useEffect(() => {
+    if (ref.current) ref.current.volume = Math.min(1, Math.max(0, volume));
+  }, [volume]);
   return <audio ref={ref} autoPlay playsInline style={{ display: 'none' }} />;
 };
 import type {
@@ -358,6 +361,8 @@ export default function App() {
   // and it persists across channel navigation while a call is active.
   const [micOn, setMicOn] = useState(true);
   const [deafOn, setDeafOn] = useState(false);
+  // Per-peer volume: socketId → 0–1. Defaults to 1 (100%) when absent.
+  const [peerVolumes, setPeerVolumes] = useState<Record<string, number>>({});
   // Tracks the previous set of peer socket IDs so onPeers can diff for join/leave sounds.
   const prevPeerSocketIds = useRef<Set<string>>(new Set());
 
@@ -2037,7 +2042,12 @@ export default function App() {
         these <audio> elements handle playback. */}
     {callPeers.flatMap((peer) =>
       peer.streams.map((rs) => (
-        <AudioTrack key={`${peer.socketId}:${rs.streamId}`} stream={rs.stream} deafened={deafOn} />
+        <AudioTrack
+          key={`${peer.socketId}:${rs.streamId}`}
+          stream={rs.stream}
+          deafened={deafOn}
+          volume={peerVolumes[peer.socketId] ?? 1}
+        />
       ))
     )}
 
@@ -2259,6 +2269,8 @@ export default function App() {
                 peers={callPeers}
                 deafOn={deafOn}
                 onToggleDeafen={handleToggleDeafen}
+                peerVolumes={peerVolumes}
+                onSetVolume={(socketId, vol) => setPeerVolumes((prev) => ({ ...prev, [socketId]: vol }))}
                 onOpenSidebar={() => setMobileSidebarOpen(true)}
               />
             )
