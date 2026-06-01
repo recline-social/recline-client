@@ -373,9 +373,11 @@ export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, 
           setPickerOpen(false);
           setFullPickerOpen(false);
         }
-        if (sparkRef.current && !sparkRef.current.contains(e.relatedTarget as Node)) {
-          setSparkOpen(false);
-        }
+        // NOTE: sparkOpen is intentionally NOT closed here. The SparkPickerPortal renders
+        // into document.body via createPortal, so its input is outside sparkRef. If we
+        // checked sparkRef.contains(relatedTarget) here, autoFocus on the picker input
+        // would immediately trigger setSparkOpen(false) and close the picker. The portal
+        // manages its own close via mousedown-outside and Escape listeners.
       }}
     >
       {/* Avatar / timestamp */}
