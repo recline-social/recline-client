@@ -56,8 +56,76 @@ export type PeerSnapshot = {
   connectionState: RTCPeerConnectionState;
 };
 
-// ICE server fallback — used only when the server doesn't return iceServers in
-// the call:join response (e.g., TURN_URL/TURN_SECRET not configured).
+// ── Audio quality ────────────────────────────────────────────────────────────
+// Target: 128 kbps stereo 48 kHz Opus with in-band FEC and DTX disabled.
+// 48 kHz is Opus's native sample rate — requesting it avoids a browser-side
+// resample step. Stereo (channelCount ideal:2) gracefully falls back to mono
+// when the input device is mono-only. maxaveragebitrate is the Opus encoder
+// directive; setParameters.maxBitrate is a belt-and-suspenders WebRTC cap
+// applied after the connection is established.
+
+const AUDIO_CAPTURE_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  sampleRate: 48_000,
+  channelCount: { ideal: 2, min: 1 },
+};
+
+const AUDIO_BITRATE_BPS = 128_000; // 128 kbps
+
+/**
+ * Munge the Opus fmtp line in an SDP string to request stereo + 128 kbps +
+ * in-band FEC + no DTX. Works on both offer and answer SDPs.
+ *
+ * stereo=1         → tell the remote we want to receive stereo
+ * sprop-stereo=1   → tell the remote we will send stereo
+ * maxaveragebitrate → Opus encoder bitrate ceiling (bps)
+ * useinbandfec=1   → Opus recovers from packet loss using redundancy in the stream
+ * usedtx=0         → disable discontinuous transmission; encoder runs continuously
+ *                    even during silence (cleaner for music/ambient, no clipping artefacts)
+ */
+function boostOpusQuality(sdp: string): string {
+  // Find the dynamic payload type the browser assigned to opus/48000/2
+  const rtpmapMatch = sdp.match(/a=rtpmap:(\d+) opus\/48000\/2/i);
+  if (!rtpmapMatch) return sdp; // no Opus — leave untouched
+
+  const pt = rtpmapMatch[1];
+
+  const desired: Record<string, string> = {
+    stereo: '1',
+    'sprop-stereo': '1',
+    maxaveragebitrate: String(AUDIO_BITRATE_BPS),
+    useinbandfec: '1',
+    usedtx: '0',
+  };
+
+  const fmtpRe = new RegExp(`(a=fmtp:${pt} )(.+)`);
+  if (fmtpRe.test(sdp)) {
+    return sdp.replace(fmtpRe, (_m, prefix, existing) => {
+      // Parse existing k=v pairs, override/append our targets.
+      const map = new Map<string, string>(
+        existing.split(';').map((s: string) => {
+          const [k, ...v] = s.trim().split('=');
+          return [k, v.join('=')];
+        }),
+      );
+      for (const [k, v] of Object.entries(desired)) map.set(k, v);
+      return prefix + Array.from(map.entries()).map(([k, v]) => `${k}=${v}`).join(';');
+    });
+  }
+
+  // No fmtp line yet — insert one directly after the rtpmap line.
+  const fmtpLine = `a=fmtp:${pt} ${Object.entries(desired).map(([k, v]) => `${k}=${v}`).join(';')}`;
+  return sdp.replace(
+    `a=rtpmap:${pt} opus/48000/2`,
+    `a=rtpmap:${pt} opus/48000/2\r\n${fmtpLine}`,
+  );
+}
+
+// ── ICE server fallback ───────────────────────────────────────────────────────
+// Used only when the server doesn't return iceServers in the call:join response
+// (e.g., TURN_URL/TURN_SECRET not configured).
 // Set VITE_ICE_SERVERS to a JSON array to override at build time.
 function buildFallbackIceServers(): RTCIceServer[] {
   try {
@@ -131,7 +199,7 @@ export class CallManager {
 
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: AUDIO_CAPTURE_CONSTRAINTS,
         video: this.wantVideo ? { width: 1280, height: 720 } : false,
       });
     } catch (err) {
@@ -455,13 +523,14 @@ export class CallManager {
         // Drain any ICE candidates that arrived while setRemoteDescription
         // was awaited — they would have been queued in pendingCandidates.
         await this.drainPendingCandidates(peer);
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
+        const rawAnswer = await pc.createAnswer();
+        const answerSdp = boostOpusQuality(rawAnswer.sdp ?? '');
+        await pc.setLocalDescription({ type: 'answer', sdp: answerSdp });
         this.socket.emit('call:signal', {
           channelId: this.channelId,
           toSocketId: data.fromSocketId,
           callToken: this.callToken,
-          payload: { type: 'answer', sdp: answer.sdp },
+          payload: { type: 'answer', sdp: answerSdp },
         });
       } else if (p?.type === 'answer') {
         if (pc.signalingState === 'have-local-offer') {
@@ -602,6 +671,8 @@ export class CallManager {
           clearTimeout(peer.iceRestartTimer);
           peer.iceRestartTimer = undefined;
         }
+        // Belt-and-suspenders bitrate cap on the sender side.
+        this.applyAudioSenderBitrate(peer);
       } else if (state === 'disconnected') {
         // Transient drop (network blip, TURN allocation expiry, background tab).
         // Wait 4 s before restarting — many disconnections recover on their own.
@@ -632,13 +703,14 @@ export class CallManager {
     if (!this.channelId) return;
     this.makingOffer.set(peer.socketId, true);
     try {
-      const offer = await peer.pc.createOffer();
-      await peer.pc.setLocalDescription(offer);
+      const raw = await peer.pc.createOffer();
+      const sdp = boostOpusQuality(raw.sdp ?? '');
+      await peer.pc.setLocalDescription({ type: 'offer', sdp });
       this.socket.emit('call:signal', {
         channelId: this.channelId,
         toSocketId: peer.socketId,
         callToken: this.callToken,
-        payload: { type: 'offer', sdp: offer.sdp },
+        payload: { type: 'offer', sdp },
       });
     } catch (err) {
       console.warn('makeOffer error', err);
@@ -655,16 +727,34 @@ export class CallManager {
     peer.iceRestartAttempts++;
     console.info(`[webrtc] ICE restart attempt ${peer.iceRestartAttempts} for ${peer.socketId}`);
     try {
-      const offer = await peer.pc.createOffer({ iceRestart: true });
-      await peer.pc.setLocalDescription(offer);
+      const raw = await peer.pc.createOffer({ iceRestart: true });
+      const sdp = boostOpusQuality(raw.sdp ?? '');
+      await peer.pc.setLocalDescription({ type: 'offer', sdp });
       this.socket.emit('call:signal', {
         channelId: this.channelId,
         toSocketId: peer.socketId,
         callToken: this.callToken,
-        payload: { type: 'offer', sdp: offer.sdp! },
+        payload: { type: 'offer', sdp },
       });
     } catch (err) {
       console.warn('[webrtc] ICE restart failed', err);
+    }
+  }
+
+  /**
+   * Belt-and-suspenders: after the connection is up, tell the RTP sender to
+   * cap at AUDIO_BITRATE_BPS. This complements the SDP fmtp directive and
+   * ensures Chrome/Firefox honour the limit even if fmtp negotiation differed.
+   */
+  private applyAudioSenderBitrate(peer: Peer) {
+    for (const sender of peer.pc.getSenders()) {
+      if (sender.track?.kind !== 'audio') continue;
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0].maxBitrate = AUDIO_BITRATE_BPS;
+      sender.setParameters(params).catch(() => { /* best-effort — not fatal */ });
     }
   }
 
