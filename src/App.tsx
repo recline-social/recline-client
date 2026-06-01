@@ -1395,19 +1395,9 @@ export default function App() {
   function handleSparkMessage(messageId: string, amount: number): Promise<void> {
     return new Promise((resolve, reject) => {
       const socket = socketRef.current;
-      if (!socket || !socket.connected) {
-        console.error('[spark] socket not connected');
-        reject(new Error('not connected — try again'));
-        return;
-      }
+      if (!socket || !socket.connected) { reject(new Error('not connected — try again')); return; }
       const channelId = activeChannelId;
-      if (!channelId) {
-        console.error('[spark] no active channel');
-        reject(new Error('no active channel'));
-        return;
-      }
-
-      console.log('[spark] emitting', { messageId, channelId, amount });
+      if (!channelId) { reject(new Error('no active channel')); return; }
 
       // Timeout guard: if the server never calls the ack the Promise would hang
       // forever, leaving the button stuck in a loading state.
@@ -1421,7 +1411,6 @@ export default function App() {
         { messageId, channelId, amount },
         (resp: { ok: boolean; newBalance?: number; error?: string } | undefined) => {
           clearTimeout(timer);
-          console.log('[spark] ack received', resp);
           if (!resp) { reject(new Error('no response from server')); return; }
           if (!resp.ok) { reject(new Error(resp.error ?? 'spark failed')); return; }
           if (typeof resp.newBalance === 'number') setSparksBalance(resp.newBalance);

@@ -250,13 +250,9 @@ export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, 
   const animCooldown = useRef<number>(0); // timestamp of last replay — prevents spaz loop
 
   async function handleSendSpark(amount: number) {
-    console.log('[spark:send] called', { amount, onSpark: !!onSpark, sparkSending, sparksBalance });
-    if (!onSpark || sparkSending) { console.log('[spark:send] blocked — no handler or already sending'); return; }
-    if (amount < 1 || amount > 500) { console.log('[spark:send] blocked — amount out of range'); return; }
-    if (sparksBalance !== undefined && amount > sparksBalance) {
-      console.log('[spark:send] blocked — insufficient balance', sparksBalance, '<', amount);
-      return;
-    }
+    if (!onSpark || sparkSending) return;
+    if (amount < 1 || amount > 500) return;
+    if (sparksBalance !== undefined && amount > sparksBalance) return;
     setSparkSending(true);
     setSparkError(null);
     try {
@@ -571,7 +567,6 @@ export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, 
             <div ref={sparkRef}>
               <button
                 onClick={() => {
-                  console.log('[spark:✦] clicked, sparkOpen=', sparkOpen, 'sparksBalance=', sparksBalance);
                   if (!sparkOpen) {
                     setSparkOpen(true);
                   } else {
