@@ -17,7 +17,7 @@ type Props = {
   onClose: () => void;
   me: User;
   onUpdated: (user: User) => void;
-  onRotateKey: () => Promise<void>;
+  onRotateKey: (password: string) => Promise<void>;
   isSupporter?: boolean;
   sparksBalance?: number;
   onSparksUpdate?: (balance: number) => void;
@@ -548,19 +548,20 @@ function KeyRotation({
 }: {
   onDone: () => void;
   onCancel: () => void;
-  onRotate: () => Promise<void>;
+  onRotate: (password: string) => Promise<void>;
 }) {
   const [confirmed, setConfirmed] = useState(false);
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
   async function handleRotate() {
-    if (!confirmed) return;
+    if (!confirmed || !password) return;
     setLoading(true);
     setError(null);
     try {
-      await onRotate();
+      await onRotate(password);
       setDone(true);
       setTimeout(onDone, 900);
     } catch (err: any) {
@@ -595,6 +596,17 @@ function KeyRotation({
           until they re-open the conversation.
         </p>
       </div>
+      <div className="space-y-1">
+        <label className="text-xs text-ink-400">Confirm your password</label>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Current password"
+          className="input w-full text-sm"
+          autoComplete="current-password"
+        />
+      </div>
       <label className="flex items-center gap-2 cursor-pointer select-none">
         <input
           type="checkbox"
@@ -616,7 +628,7 @@ function KeyRotation({
         <button
           type="button"
           className="btn-primary flex-1 !bg-amber-600/80 hover:!bg-amber-600"
-          disabled={loading || !confirmed}
+          disabled={loading || !confirmed || !password}
           onClick={handleRotate}
         >
           {loading ? 'Rotating…' : 'Rotate key'}
@@ -756,7 +768,7 @@ function SecurityTab({
 }: {
   me: User;
   onUpdated: (user: User) => void;
-  onRotateKey: () => Promise<void>;
+  onRotateKey: (password: string) => Promise<void>;
 }) {
   type Panel = 'idle' | 'totp-setup' | 'totp-disable' | 'regen-codes' | 'rotate-key';
   const [panel, setPanel] = useState<Panel>('idle');
@@ -932,21 +944,62 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
   const [packsList, setPacksList]     = useState<SparkPackItem[]>([]);
   const [buyingPackId, setBuyingPackId] = useState<string | null>(null);
 
+  // Stripe Connect / cashout state
+  const [connectReady, setConnectReady]   = useState(false);
+  const [connectLoading, setConnectLoading] = useState(false);
+  const [cashoutAmount, setCashoutAmount]  = useState('');
+  const [cashoutMsg, setCashoutMsg]        = useState<string | null>(null);
+  const [cashoutErr, setCashoutErr]        = useState<string | null>(null);
+  const [cashouting, setCashouting]        = useState(false);
+
   useEffect(() => {
     let live = true;
-    Promise.all([api.sparks.streak(), api.sparks.transactions(10), api.sparks.packs()])
-      .then(([s, t, p]) => {
+    Promise.all([api.sparks.streak(), api.sparks.transactions(10), api.sparks.packs(), api.connect.status()])
+      .then(([s, t, p, c]) => {
         if (!live) return;
         setStreak(s.currentStreak);
         setClaimed(s.alreadyClaimedToday);
         setWeekMult(s.weekMultiplier ?? 0);
         setTxns(t.transactions ?? []);
         setPacksList(p.packs ?? []);
+        setConnectReady(c.ready);
       })
       .catch(() => {})
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, []);
+
+  async function handleConnectOnboard() {
+    setConnectLoading(true);
+    try {
+      const r = await api.connect.onboard();
+      if (r.url) window.location.href = r.url;
+    } catch { /* silent */ } finally {
+      setConnectLoading(false);
+    }
+  }
+
+  async function handleCashout() {
+    const sparks = parseInt(cashoutAmount, 10);
+    if (!sparks || sparks < 1000) {
+      setCashoutErr('Minimum cashout is 1 000 Sparks');
+      return;
+    }
+    setCashouting(true);
+    setCashoutErr(null);
+    setCashoutMsg(null);
+    try {
+      const r = await api.connect.cashout(sparks);
+      setCashoutMsg(`✦ Sent $${(r.payoutCents / 100).toFixed(2)} to your bank`);
+      onSparksUpdate?.(r.newBalance);
+      setCashoutAmount('');
+      setTimeout(() => setCashoutMsg(null), 5000);
+    } catch (err: any) {
+      setCashoutErr(err?.message ?? 'Transfer failed — try again');
+    } finally {
+      setCashouting(false);
+    }
+  }
 
   async function handleBuyPack(packId: string) {
     if (buyingPackId) return;
@@ -1144,6 +1197,59 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
                 </button>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Cash out — Stripe Connect */}
+      {!loading && (
+        <div className="rounded-2xl overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+          <div className="px-4 pt-3 pb-2 border-b" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
+            <div className="text-[13px] font-semibold text-ink-100">Cash out Sparks</div>
+            <div className="text-[11px] text-ink-400 mt-0.5">1 000 Sparks = $12 · transferred via Stripe</div>
+          </div>
+          <div className="px-4 py-3 space-y-2">
+            {connectReady ? (
+              <>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    min={1000}
+                    max={100000}
+                    step={100}
+                    value={cashoutAmount}
+                    onChange={(e) => setCashoutAmount(e.target.value)}
+                    placeholder="Sparks (min 1 000)"
+                    className="input flex-1 text-sm"
+                  />
+                  <button
+                    type="button"
+                    disabled={cashouting || !cashoutAmount}
+                    onClick={handleCashout}
+                    className="btn-primary !py-1.5 !px-3 text-[12px] font-bold disabled:opacity-50"
+                    style={{ background: 'rgba(16,185,129,0.2)', border: '1px solid rgba(16,185,129,0.35)', color: '#34d399' }}
+                  >
+                    {cashouting ? 'Sending…' : `Cash out $${cashoutAmount ? (parseInt(cashoutAmount, 10) * 1.2 / 100).toFixed(2) : '0'}`}
+                  </button>
+                </div>
+                {cashoutMsg && <p className="text-[12px] text-emerald-400 font-medium">{cashoutMsg}</p>}
+                {cashoutErr && <p className="text-[12px] text-rose-400">{cashoutErr}</p>}
+                <p className="text-[10px] text-ink-500">Connected to Stripe ✓ — payouts go to your linked bank account</p>
+              </>
+            ) : (
+              <>
+                <p className="text-[12px] text-ink-300">Link a bank account to convert Sparks you've earned into real money.</p>
+                <button
+                  type="button"
+                  disabled={connectLoading}
+                  onClick={handleConnectOnboard}
+                  className="w-full py-2 rounded-xl text-[12px] font-bold transition-all disabled:opacity-50"
+                  style={{ background: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.3)', color: '#34d399' }}
+                >
+                  {connectLoading ? 'Opening Stripe…' : 'Link bank account via Stripe →'}
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}

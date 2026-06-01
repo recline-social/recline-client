@@ -192,11 +192,13 @@ export const api = {
 
   me: () => request<{ user: UserPayload }>('/api/auth/me'),
 
-  /** Upload this client's ECDH public key so peers can derive DM keys. */
-  registerPublicKey: (jwkString: string) =>
+  /** Upload this client's ECDH public key so peers can derive DM keys.
+   *  `password` is required when overwriting an existing key (CRYPTO-005).
+   *  Initial registration (no key yet) does not require a password. */
+  registerPublicKey: (jwkString: string, password?: string) =>
     request<{ ok: boolean }>('/api/auth/me/public-key', {
       method: 'PUT',
-      body: JSON.stringify({ publicKey: jwkString }),
+      body: JSON.stringify({ publicKey: jwkString, ...(password ? { password } : {}) }),
     }),
 
   /** Fetch a peer's ECDH public key. Returns null publicKey if not set. */
@@ -550,6 +552,24 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ packId }),
       }),
+  },
+
+  // ── Stripe Connect (cashout) ──────────────────────────────────────────────
+  connect: {
+    /** Check whether the authenticated user's Stripe Connect account is ready to receive transfers. */
+    status: () =>
+      request<{ connected: boolean; ready: boolean }>('/api/connect/status'),
+
+    /** Start Stripe Express onboarding. Returns the onboarding URL — redirect the user to it. */
+    onboard: () =>
+      request<{ url: string }>('/api/connect/onboard', { method: 'POST' }),
+
+    /** Redeem Sparks for cash via Stripe Transfer. Minimum 1 000 Sparks. */
+    cashout: (sparks: number) =>
+      request<{ success: boolean; payoutCents: number; newBalance: number; transferId: string }>(
+        '/api/connect/cashout',
+        { method: 'POST', body: JSON.stringify({ sparks }) },
+      ),
   },
 
   broadcasts: {

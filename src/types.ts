@@ -133,6 +133,13 @@ export type DmWireMessage = {
   nonce: string | null;
   /** Set only for legacy plaintext messages (deprecated). */
   body: string | null;
+  /**
+   * CRYPTO-006: Snapshot of the sender's ECDH public key at the time the message
+   * was sent.  Use this (instead of dmChannel.otherPublicKey) when retrying
+   * decryption after a key rotation — it points to whichever key epoch was active
+   * when the ciphertext was produced.
+   */
+  senderEcdhPublicKey?: string | null;
   createdAt: number;
 };
 

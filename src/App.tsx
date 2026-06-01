@@ -832,7 +832,7 @@ export default function App() {
       let decoded: DmMessage;
       if (wire.ciphertext && wire.nonce && dmChannel) {
         try {
-          const body = await tryDecryptDm(wire.ciphertext, wire.nonce, dmChannel);
+          const body = await tryDecryptDm(wire.ciphertext, wire.nonce, dmChannel, wire.senderEcdhPublicKey);
           decoded = { ...wire, body, failed: false };
         } catch {
           decoded = { ...wire, body: '[could not decrypt]', failed: true };
@@ -1582,19 +1582,47 @@ export default function App() {
    * Decrypt a single DM ciphertext, falling back through archived key pairs if the
    * current derived key fails. This handles the post-rotation scenario where old
    * messages were encrypted with a previous ECDH key pair.
+   *
+   * CRYPTO-006: `senderEcdhPublicKey` is the sender's key at the time the message
+   * was sent (snapshotted on the server).  When provided and different from the
+   * current peer public key, we try it first so post-rotation historical messages
+   * can be decrypted without walking all key history.
    */
   async function tryDecryptDm(
     ciphertext: string,
     nonce: string,
     dmChannel: DmChannel,
+    senderEcdhPublicKey?: string | null,
   ): Promise<string> {
-    // Try the current derived key first (fast path — cache hit)
+    // Fast path: try the current derived key (cache hit — no imports needed)
     const currentKey = await getDmKey(dmChannel);
     if (currentKey) {
       try { return await decryptText(currentKey, ciphertext, nonce); } catch { /* fall through */ }
     }
 
-    // Current key failed — walk through archived historical key pairs (post-rotation fallback)
+    // CRYPTO-006: sender's key at send-time differs from current peer key → derive
+    // against that specific epoch using current and historical own private keys.
+    if (senderEcdhPublicKey && senderEcdhPublicKey !== dmChannel.otherPublicKey) {
+      try {
+        const snapshotKey = await importPeerPublicKey(senderEcdhPublicKey);
+        const currentPair = dmKeyPairRef.current;
+        if (currentPair) {
+          try {
+            const k = await deriveDmKey(currentPair.privateKey, snapshotKey, dmChannel.id);
+            return await decryptText(k, ciphertext, nonce);
+          } catch { /* fall through */ }
+        }
+        const history = await loadDmKeyHistory();
+        for (const oldPair of history) {
+          try {
+            const k = await deriveDmKey(oldPair.privateKey, snapshotKey, dmChannel.id);
+            return await decryptText(k, ciphertext, nonce);
+          } catch { /* try next */ }
+        }
+      } catch { /* importPeerPublicKey failed — sender key snapshot invalid */ }
+    }
+
+    // Original fallback: walk all archived own keys × current peer public key
     if (dmChannel.otherPublicKey) {
       const history = await loadDmKeyHistory();
       if (history.length > 0) {
@@ -1617,7 +1645,7 @@ export default function App() {
     for (const m of wire) {
       if (m.ciphertext && m.nonce) {
         try {
-          const body = await tryDecryptDm(m.ciphertext, m.nonce, dmChannel);
+          const body = await tryDecryptDm(m.ciphertext, m.nonce, dmChannel, m.senderEcdhPublicKey);
           result.push({ ...m, body, failed: false });
         } catch {
           result.push({ ...m, body: '[could not decrypt]', failed: true });
@@ -1843,7 +1871,7 @@ export default function App() {
     disconnectSocket();
   }
 
-  async function handleRotateKey(): Promise<void> {
+  async function handleRotateKey(password: string): Promise<void> {
     // CRYPTO-012: server update must succeed BEFORE local state is committed.
     // 1. Generate a new key pair (do not archive yet, do not touch dmKeyPairRef).
     // 2. Export the public key JWK.
@@ -1851,19 +1879,16 @@ export default function App() {
     //    local and remote keys never desync.
     // 4. Only on success: archive the old key, persist the new pair, update the ref,
     //    and flush cached AES-GCM keys so they're re-derived from the new private key.
-    try {
-      const newPair = await generateDmKeyPair();
-      const pubJwk = await exportPublicKeyJwk(newPair.publicKey);
-      await api.registerPublicKey(pubJwk); // throws on network/server error
-      // Server accepted the key — now commit locally
-      await archiveCurrentKeyPair();
-      await saveDmKeyPair(newPair);
-      dmKeyPairRef.current = newPair;
-      clearAllDmKeys();
-    } catch (err) {
-      // Re-throw so KeyRotation component can surface the error to the user
-      throw err;
-    }
+    // CRYPTO-005: password is forwarded so the server can verify ownership before
+    //   overwriting an existing public key. Prevents stolen-session MITM attacks.
+    const newPair = await generateDmKeyPair();
+    const pubJwk = await exportPublicKeyJwk(newPair.publicKey);
+    await api.registerPublicKey(pubJwk, password); // throws on network/server error
+    // Server accepted the key — now commit locally
+    await archiveCurrentKeyPair();
+    await saveDmKeyPair(newPair);
+    dmKeyPairRef.current = newPair;
+    clearAllDmKeys();
   }
 
   function switchServer() {
