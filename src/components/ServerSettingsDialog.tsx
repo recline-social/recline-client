@@ -228,7 +228,7 @@ export function ServerSettingsDialog({
     setIconUploading(true);
     setIconErr(null);
     try {
-      const { url } = await api.uploadFile(file);
+      const { url } = await api.uploadAvatar(file);
       await api.updateServer(server.id, { iconUrl: url });
       onIconChange?.(url);
     } catch (ex: any) {

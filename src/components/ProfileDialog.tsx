@@ -394,7 +394,7 @@ function ProfileTab({
     setAvatarUploading(true);
     setAvatarError(null);
     try {
-      const { url } = await api.uploadFile(file);
+      const { url } = await api.uploadAvatar(file);
       const r = await api.updateMe({ avatarUrl: url });
       onUpdated(r.user as User);
     } catch (err: any) {

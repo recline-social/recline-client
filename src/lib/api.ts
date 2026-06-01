@@ -415,11 +415,10 @@ export const api = {
 
   // ── Uploads ──────────────────────────────────────────────────────────────
   /**
-   * Upload an image file. Returns a relative URL (/uploads/hex.ext) that can
-   * be stored in avatar_url / icon_url fields. The client reads the file as a
-   * data-URL (base64) and sends it as JSON — no multipart needed.
+   * Upload an avatar/icon image (base64 JSON path, max 5 MB).
+   * Returns a relative URL (/uploads/hex.ext).
    */
-  uploadFile: (file: File): Promise<{ url: string }> =>
+  uploadAvatar: (file: File): Promise<{ url: string }> =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => {
@@ -594,6 +593,46 @@ export const api = {
         `/api/servers/${serverId}/broadcast-settings`,
         { method: 'PATCH', body: JSON.stringify(settings) },
       ),
+  },
+
+  /** Upload a file as a chat attachment. Uses XHR for upload progress events.
+   *  Returns { url, name, size, type } on success. */
+  uploadFile: (
+    file: File,
+    onProgress?: (pct: number) => void,
+  ): Promise<import('../types').FileAttachment> => {
+    return new Promise((resolve, reject) => {
+      const token = getToken();
+      const base  = getServerUrl();
+      const xhr   = new XMLHttpRequest();
+      const form  = new FormData();
+      form.append('file', file);
+
+      xhr.open('POST', `${base}/api/upload/file`);
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+      });
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status === 200) {
+          try { resolve(JSON.parse(xhr.responseText)); }
+          catch { reject(new Error('invalid server response')); }
+        } else {
+          try {
+            const body = JSON.parse(xhr.responseText);
+            reject(new Error(body.error ?? `upload failed (${xhr.status})`));
+          } catch {
+            reject(new Error(`upload failed (${xhr.status})`));
+          }
+        }
+      });
+
+      xhr.addEventListener('error', () => reject(new Error('network error during upload')));
+      xhr.addEventListener('abort', () => reject(new Error('upload cancelled')));
+      xhr.send(form);
+    });
   },
 
   invites: {

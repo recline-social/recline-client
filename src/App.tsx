@@ -1344,7 +1344,12 @@ export default function App() {
     }
   }
 
-  async function handleSendMessage(text: string, replyToId?: string | null, animationType?: string) {
+  async function handleSendMessage(
+    text: string,
+    replyToId?: string | null,
+    animationType?: string,
+    attachment?: import('./types').FileAttachment,
+  ) {
     if (!activeServerId || !activeChannelId) return;
     if (text.length > 4000) throw new Error('Message too long (max 4000 characters)');
     const key = getCachedKey(activeServerId);
@@ -1354,7 +1359,14 @@ export default function App() {
     return new Promise<void>((resolve, reject) => {
       socket.emit(
         'message:send',
-        { channelId: activeChannelId, ciphertext, nonce, replyToId: replyToId ?? null, animationType: animationType ?? null },
+        {
+          channelId: activeChannelId, ciphertext, nonce,
+          replyToId: replyToId ?? null, animationType: animationType ?? null,
+          fileUrl:  attachment?.url  ?? null,
+          fileName: attachment?.name ?? null,
+          fileSize: attachment?.size ?? null,
+          fileType: attachment?.type ?? null,
+        },
         (resp: { ok: boolean; id?: string; error?: string }) => {
           if (!resp?.ok) reject(new Error(resp?.error ?? 'send failed'));
           else resolve();

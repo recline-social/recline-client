@@ -67,6 +67,14 @@ export type InviteLink = {
   createdBy: string;
 };
 
+/** A file attached to a chat message — stored as plaintext alongside the ciphertext. */
+export type FileAttachment = {
+  url: string;
+  name: string;
+  size: number;
+  type: string;
+};
+
 export type InviteInfo = {
   serverId: string;
   serverName: string;
@@ -123,6 +131,11 @@ export type WireMessage = {
   animationType?: string | null;
   /** Total Sparks tipped to this message. 0 when no sparks have been sent. */
   totalSparks?: number;
+  /** File attachment — all four present or all null. */
+  fileUrl?: string | null;
+  fileName?: string | null;
+  fileSize?: number | null;
+  fileType?: string | null;
 };
 
 export type DecodedMessage = WireMessage & {

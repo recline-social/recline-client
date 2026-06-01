@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Member } from '../types';
+import type { FileAttachment, Member } from '../types';
+import { api } from '../lib/api';
 import { EmojiPicker } from './EmojiPicker';
 
 export type ReplyingTo = {
@@ -54,10 +55,28 @@ export function detectAnimationTag(text: string): { text: string; animationType:
   return null;
 }
 
+// Accepted MIME types for chat file attachments
+const ACCEPTED_FILE_TYPES = [
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+  'video/mp4', 'video/webm', 'video/quicktime',
+  'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/flac', 'audio/x-flac',
+  'application/pdf',
+  'text/plain', 'text/markdown',
+  'application/zip', 'application/x-zip-compressed',
+].join(',');
+
+const MAX_FILE_BYTES = 200 * 1024 * 1024; // 200 MB — same as server limit
+
+function fmtBytes(b: number): string {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / 1024 / 1024).toFixed(1)} MB`;
+}
+
 type Props = {
   placeholder: string;
   disabled?: boolean;
-  onSend: (text: string, animationType?: AnimationType) => Promise<void> | void;
+  onSend: (text: string, animationType?: AnimationType, attachment?: FileAttachment) => Promise<void> | void;
   onTyping: () => void;
   replyingTo?: ReplyingTo | null;
   onCancelReply?: () => void;
@@ -86,6 +105,71 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
   const emojiWrapRef = useRef<HTMLDivElement>(null);
   const animPickerRef = useRef<HTMLDivElement>(null);
+
+  // ── File attachment state ──────────────────────────────────────────────────
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingFile, setPendingFile]       = useState<File | null>(null);
+  const [uploadPct, setUploadPct]           = useState<number>(0);
+  const [uploadDone, setUploadDone]         = useState(false);
+  const [uploadError, setUploadError]       = useState<string | null>(null);
+  const [attachment, setAttachment]         = useState<FileAttachment | null>(null);
+  const xhrRef = useRef<XMLHttpRequest | null>(null);
+
+  function clearFile() {
+    setPendingFile(null);
+    setUploadPct(0);
+    setUploadDone(false);
+    setUploadError(null);
+    setAttachment(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    xhrRef.current?.abort();
+    xhrRef.current = null;
+  }
+
+  function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > MAX_FILE_BYTES) {
+      setSendError(`File too large — max 200 MB (your file is ${fmtBytes(file.size)})`);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+    setPendingFile(file);
+    setUploadPct(0);
+    setUploadDone(false);
+    setUploadError(null);
+    setAttachment(null);
+
+    // Start upload immediately
+    const xhr = new XMLHttpRequest();
+    xhrRef.current = xhr;
+    api.uploadFile(file, (pct) => setUploadPct(pct))
+      .then((att) => { setAttachment(att); setUploadDone(true); xhrRef.current = null; })
+      .catch((err: Error) => { setUploadError(err.message); xhrRef.current = null; });
+  }
+
+  // Drag-and-drop support on the composer wrapper
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    if (disabled) return;
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    // Simulate file input selection
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    if (fileInputRef.current) {
+      fileInputRef.current.files = dt.files;
+      fileInputRef.current.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      // Fallback: trigger upload directly
+      if (file.size > MAX_FILE_BYTES) { setSendError(`File too large — max 200 MB`); return; }
+      setPendingFile(file);
+      setUploadPct(0); setUploadDone(false); setUploadError(null); setAttachment(null);
+      api.uploadFile(file, setUploadPct)
+        .then((att) => { setAttachment(att); setUploadDone(true); })
+        .catch((err: Error) => setUploadError(err.message));
+    }
+  }
 
   // Mention autocomplete state
   const [mentionQuery, setMentionQuery] = useState<{ query: string; start: number } | null>(null);
@@ -178,26 +262,39 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
 
   async function submit() {
     let text = value.trim();
-    if (!text || disabled) return;
+    const hasAttachment = !!pendingFile;
+    if (!text && !hasAttachment) return;
+    if (disabled) return;
     setSendError(null);
+
+    // If upload is still in progress, wait for it (or show error)
+    if (pendingFile && !uploadDone && !uploadError) {
+      setSendError('Still uploading — wait a moment then try again');
+      return;
+    }
+    if (uploadError) {
+      setSendError(`Upload failed: ${uploadError}`);
+      return;
+    }
 
     // Detect inline free-animation tag prefix (e.g. ~wave~ Hello)
     let animationType: AnimationType | undefined = selectedAnim ?? undefined;
-    if (!animationType) {
+    if (!animationType && text) {
       const tagged = detectAnimationTag(text);
       if (tagged) {
         text = tagged.text.trim();
-        if (!text) return; // tag with no body — don't send
+        if (!text && !hasAttachment) return;
         animationType = tagged.animationType;
       }
     }
 
     try {
-      await onSend(text, animationType ?? undefined);
+      await onSend(text || '​', animationType ?? undefined, attachment ?? undefined);
       setValue('');
       setMentionQuery(null);
       setSelectedAnim(null);
       setAnimPickerOpen(false);
+      clearFile();
     } catch (err: any) {
       setSendError(err?.message ?? 'Failed to send — press Enter to retry');
     }
@@ -219,7 +316,17 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
     <div
       className="px-3 md:px-5 pt-1 shrink-0"
       style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 20px)' }}
+      onDragOver={(e) => { e.preventDefault(); }}
+      onDrop={handleDrop}
     >
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={ACCEPTED_FILE_TYPES}
+        className="hidden"
+        onChange={handleFilePick}
+      />
       {/* Reply preview bar */}
       {replyingTo && (
         <div className="mb-1.5 flex items-center gap-2 rounded-xl bg-ink-800/70 border border-white/[0.06] px-3 py-2">
@@ -268,6 +375,59 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
         </div>
       )}
 
+      {/* File preview card */}
+      {pendingFile && (
+        <div className="mb-1.5 rounded-xl bg-ink-800/70 border border-white/[0.06] overflow-hidden">
+          {/* Image preview */}
+          {pendingFile.type.startsWith('image/') && attachment && (
+            <img
+              src={attachment.url}
+              alt={pendingFile.name}
+              className="w-full max-h-48 object-contain bg-black/30"
+            />
+          )}
+          <div className="flex items-center gap-2.5 px-3 py-2">
+            {/* File type icon */}
+            <div className="w-8 h-8 rounded-lg bg-ink-700 shrink-0 flex items-center justify-center text-[18px]">
+              {pendingFile.type.startsWith('image/') ? '🖼️'
+               : pendingFile.type.startsWith('video/') ? '🎬'
+               : pendingFile.type.startsWith('audio/') ? '🎵'
+               : pendingFile.type === 'application/pdf' ? '📄'
+               : pendingFile.type.includes('zip') ? '🗜️'
+               : '📎'}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[12px] font-medium text-ink-100 truncate">{pendingFile.name}</p>
+              <p className="text-[10px] text-ink-400">{fmtBytes(pendingFile.size)}</p>
+              {/* Progress bar */}
+              {!uploadDone && !uploadError && (
+                <div className="mt-1 h-1 rounded-full bg-ink-700 overflow-hidden">
+                  <div
+                    className="h-full bg-accent-violet transition-all duration-200 rounded-full"
+                    style={{ width: `${uploadPct}%` }}
+                  />
+                </div>
+              )}
+              {uploadDone && (
+                <p className="text-[10px] text-emerald-400 mt-0.5">✓ Ready to send</p>
+              )}
+              {uploadError && (
+                <p className="text-[10px] text-rose-400 mt-0.5">✕ {uploadError}</p>
+              )}
+            </div>
+            <button
+              onClick={clearFile}
+              className="shrink-0 text-ink-400 hover:text-rose-300 transition-colors"
+              title="Remove file"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="relative">
         {/* Emoji picker popover */}
         {emojiOpen && (
@@ -294,6 +454,25 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
             className="flex-1 bg-transparent resize-none outline-none text-ink-100 placeholder:text-ink-300/50 py-1.5 min-h-[36px]"
             style={{ fontSize: '16px' }}
           />
+          {/* Paperclip — file attachment */}
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => fileInputRef.current?.click()}
+            title="Attach file (max 200 MB)"
+            aria-label="Attach file"
+            className={`shrink-0 h-[36px] w-[36px] grid place-items-center rounded-xl border transition-colors
+              ${pendingFile
+                ? 'bg-accent-violet/20 border-accent-violet/40 text-accent-violet'
+                : 'bg-ink-700/60 border-white/[0.06] text-ink-300 hover:text-ink-100 hover:bg-ink-700/80'
+              }
+              disabled:opacity-40 disabled:pointer-events-none`}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </button>
+
           {/* Animation picker button */}
           <div className="relative shrink-0" ref={animPickerRef}>
             <button

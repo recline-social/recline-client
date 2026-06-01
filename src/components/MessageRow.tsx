@@ -251,6 +251,89 @@ function SparkPickerPortal({
   );
 }
 
+// ── File attachment renderer ──────────────────────────────────────────────────
+function fmtBytes(b: number): string {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function FileAttachmentView({ url, name, size, type }: { url: string; name: string; size: number; type: string }) {
+  const isImage = type.startsWith('image/');
+  const isVideo = type.startsWith('video/');
+  const isAudio = type.startsWith('audio/');
+
+  if (isImage) {
+    return (
+      <a href={url} target="_blank" rel="noopener noreferrer" className="block mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06] hover:border-white/10 transition-colors">
+        <img src={url} alt={name} className="w-full max-h-64 object-contain bg-black/20" loading="lazy" />
+        <div className="px-2.5 py-1.5 bg-ink-800/60 flex items-center gap-2">
+          <span className="text-[11px] text-ink-300 truncate flex-1">{name}</span>
+          <span className="text-[10px] text-ink-500 shrink-0">{fmtBytes(size)}</span>
+        </div>
+      </a>
+    );
+  }
+
+  if (isVideo) {
+    return (
+      <div className="mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06]">
+        <video
+          src={url}
+          controls
+          preload="metadata"
+          className="w-full max-h-64 bg-black"
+          style={{ display: 'block' }}
+        />
+        <div className="px-2.5 py-1.5 bg-ink-800/60 flex items-center gap-2">
+          <span className="text-[11px] text-ink-300 truncate flex-1">{name}</span>
+          <span className="text-[10px] text-ink-500 shrink-0">{fmtBytes(size)}</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (isAudio) {
+    return (
+      <div className="mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06] bg-ink-800/60 px-3 py-2.5">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-lg">🎵</span>
+          <div className="min-w-0">
+            <p className="text-[12px] font-medium text-ink-100 truncate">{name}</p>
+            <p className="text-[10px] text-ink-400">{fmtBytes(size)}</p>
+          </div>
+        </div>
+        <audio src={url} controls preload="metadata" className="w-full h-8" style={{ display: 'block' }} />
+      </div>
+    );
+  }
+
+  // Generic file card — PDF, text, zip, etc.
+  const icon = type === 'application/pdf' ? '📄'
+    : type.includes('zip') ? '🗜️'
+    : type.startsWith('text/') ? '📝'
+    : '📎';
+
+  return (
+    <a
+      href={url}
+      download={name}
+      className="mt-1.5 flex items-center gap-3 max-w-sm rounded-xl border border-white/[0.06] bg-ink-800/60 px-3 py-2.5 hover:bg-ink-700/60 hover:border-white/10 transition-colors"
+    >
+      <span className="text-2xl shrink-0">{icon}</span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[12px] font-medium text-ink-100 truncate">{name}</p>
+        <p className="text-[10px] text-ink-400">{fmtBytes(size)}</p>
+      </div>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-ink-400 shrink-0">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+    </a>
+  );
+}
+
 export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, onReaction, onReport, onReply, onClickUser, onSpark, members, meId, sparksBalance }: Props) {
   const name = sender?.displayName ?? sender?.username ?? 'unknown';
   const c = userColor(sender?.id ?? msg.senderId, isSelf);
@@ -482,6 +565,16 @@ export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, 
               <span className="text-[10px] text-ink-400/70 ml-1.5 select-none">(edited)</span>
             )}
           </div>
+        )}
+
+        {/* File attachment */}
+        {!editing && msg.fileUrl && (
+          <FileAttachmentView
+            url={msg.fileUrl}
+            name={msg.fileName ?? 'file'}
+            size={msg.fileSize ?? 0}
+            type={msg.fileType ?? ''}
+          />
         )}
 
         {/* Spark total badge */}

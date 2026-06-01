@@ -3,7 +3,7 @@ import { MessageRow } from './MessageRow';
 import { ReportDialog } from './ReportDialog';
 import { Composer, type AnimationType, type ReplyingTo } from './Composer';
 import { TypingIndicator } from './TypingIndicator';
-import type { Channel, DecodedMessage, Member, User } from '../types';
+import type { Channel, DecodedMessage, FileAttachment, Member, User } from '../types';
 
 type Props = {
   channel: Channel;
@@ -12,7 +12,7 @@ type Props = {
   me: User;
   encrypted: boolean;
   typingIds: string[];
-  onSend: (text: string, replyToId?: string | null, animationType?: AnimationType) => Promise<void>;
+  onSend: (text: string, replyToId?: string | null, animationType?: AnimationType, attachment?: FileAttachment) => Promise<void>;
   sparksBalance?: number;
   onTyping: () => void;
   onUnlock: () => void;
@@ -223,10 +223,10 @@ export function ChatPanel({
       <Composer
         placeholder={`Message #${channel.name}`}
         disabled={!encrypted}
-        onSend={async (text, animationType) => {
+        onSend={async (text, animationType, attachment) => {
           const currentReplyToId = replyingTo?.id ?? null;
           setReplyingTo(null);
-          await onSend(text, currentReplyToId, animationType);
+          await onSend(text, currentReplyToId, animationType, attachment);
         }}
         onTyping={onTyping}
         replyingTo={replyingTo}
