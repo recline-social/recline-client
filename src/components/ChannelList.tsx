@@ -21,6 +21,7 @@ function RoomDot() {
     <span className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-60 shrink-0" />
   );
 }
+
 function MicIcon() {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -67,11 +68,12 @@ export function ChannelList(props: Props) {
     });
   }
 
-  const text = channels.filter((c) => c.type === 'text');
+  const text  = channels.filter((c) => c.type === 'text');
   const voice = channels.filter((c) => c.type === 'voice');
 
   return (
     <div className="h-full flex flex-col bg-ink-900/60 border-r border-white/5">
+      {/* ── Server header ─────────────────────────────────────── */}
       <div className="px-3 py-2.5 border-b border-white/5 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${encrypted ? 'bg-emerald-400' : 'bg-amber-400'}`} />
@@ -81,10 +83,23 @@ export function ChannelList(props: Props) {
           {canManage && (
             <button
               onClick={copyInvite}
-              className="btn-ghost text-[11px] px-2 py-1 font-mono text-ink-400 hover:text-ink-200"
-              title="Copy invite code"
+              className={`flex items-center gap-1 px-2 py-0.5 rounded-md font-mono text-[10px] border transition-all duration-150 ${
+                copied
+                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                  : 'bg-ink-800 border-white/[0.08] text-ink-400 hover:text-ink-200 hover:border-white/[0.14]'
+              }`}
+              title="Copy invite link"
             >
-              {copied ? 'copied' : inviteCode.slice(0, 6) + '…'}
+              {copied ? (
+                <>
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  copied
+                </>
+              ) : (
+                inviteCode.slice(0, 6) + '…'
+              )}
             </button>
           )}
           <button
@@ -100,7 +115,8 @@ export function ChannelList(props: Props) {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-2 py-3 space-y-4">
+      {/* ── Channel list ─────────────────────────────────────── */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-2 py-3 space-y-5">
         <Section
           title="Rooms"
           canAdd={canManage}
@@ -191,15 +207,19 @@ function Section({
 }) {
   return (
     <div>
-      <div className="flex items-center justify-between px-2 mb-1">
-        <span className="text-[10px] uppercase tracking-[0.14em] text-ink-300 font-semibold">{title}</span>
+      {/* Section header with fading divider line */}
+      <div className="flex items-center gap-2 px-1 mb-1.5">
+        <span className="text-[10px] uppercase tracking-[0.14em] text-ink-400 font-semibold shrink-0 select-none">
+          {title}
+        </span>
+        <div className="flex-1 h-px bg-gradient-to-r from-white/[0.07] to-transparent" />
         {canAdd && !adding && (
           <button
             onClick={onAdd}
-            className="text-ink-300 hover:text-ink-100 transition-colors"
-            title="Add channel"
+            className="text-ink-400 hover:text-ink-100 transition-colors shrink-0"
+            title={`Add ${title.toLowerCase()} channel`}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
@@ -231,21 +251,28 @@ function ChannelItem({
   const hasUnread = unread > 0;
   return (
     <div className="group/item relative">
+      {/* Active left accent bar */}
+      {active && (
+        <span className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-0.5 h-4 rounded-r-full bg-accent-violet pointer-events-none" />
+      )}
       <button
         onClick={onClick}
-        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors
-          ${
-            active
-              ? 'bg-white/[0.07] text-ink-100'
-              : hasUnread
-              ? 'text-white hover:bg-white/[0.04]'
-              : 'text-ink-200 hover:bg-white/[0.04] hover:text-ink-100'
-          }`}
+        className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[13px] transition-all duration-100 ${
+          active
+            ? 'bg-accent-violet/10 text-ink-100'
+            : hasUnread
+            ? 'text-white hover:bg-white/[0.05]'
+            : 'text-ink-300 hover:bg-white/[0.04] hover:text-ink-200'
+        }`}
       >
-        <span className={active || hasUnread ? 'text-ink-100' : 'text-ink-300'}>{icon}</span>
-        <span className={`truncate flex-1 text-left ${hasUnread && !active ? 'font-semibold' : ''}`}>{name}</span>
+        <span className={active ? 'text-accent-violet/70' : hasUnread ? 'text-ink-200' : 'text-ink-500'}>
+          {icon}
+        </span>
+        <span className={`truncate flex-1 text-left text-[13px] ${hasUnread && !active ? 'font-semibold' : ''}`}>
+          {name}
+        </span>
         {badge && (
-          <span className="pill bg-accent-violet/20 text-accent-violet">{badge}</span>
+          <span className="pill bg-accent-violet/15 text-accent-violet border-0 text-[10px]">{badge}</span>
         )}
         {hasUnread && (
           <span className="min-w-[18px] h-[18px] px-1 grid place-items-center rounded-full bg-rose-500 text-white text-[10px] font-bold">

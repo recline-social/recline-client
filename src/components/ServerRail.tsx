@@ -118,11 +118,7 @@ export function ServerRail({
 
       {/* Recline logo */}
       <div
-        className="h-10 w-10 grid place-items-center rounded-2xl mb-1 shrink-0"
-        style={{
-          background: '#4F75FF',
-          boxShadow: '0 4px 14px -4px rgba(79,117,255,0.45)',
-        }}
+        className="h-10 w-10 grid place-items-center rounded-2xl mb-1 shrink-0 bg-accent-violet shadow-glow ring-1 ring-white/10"
         title="Recline"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -259,14 +255,7 @@ export function ServerRail({
         </button>
 
         {menuOpen && (
-          <div
-            className="absolute left-[54px] bottom-0 z-30 w-56 rounded-xl py-1.5 shadow-soft overflow-hidden"
-            style={{
-              background: 'rgba(14,11,20,0.97)',
-              border: '1px solid rgba(255,255,255,0.09)',
-              backdropFilter: 'blur(24px)',
-            }}
-          >
+          <div className="absolute left-[54px] bottom-0 z-30 w-56 rounded-xl py-1.5 shadow-soft overflow-hidden bg-ink-950/95 border border-white/[0.09] backdrop-blur-2xl">
             {/* User identity */}
             <div className="px-3 py-2.5 border-b border-white/[0.07]">
               <div className="flex items-center gap-2.5">
@@ -283,15 +272,10 @@ export function ServerRail({
                   <span className="text-[10px] text-ink-400">{connLabel}</span>
                 </div>
                 <span
-                  className="inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-                  style={{
-                    background: 'rgba(245,158,11,0.12)',
-                    border: '1px solid rgba(245,158,11,0.25)',
-                    color: '#fbbf24',
-                  }}
+                  className="inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-accent-amber/10 border border-accent-amber/25 text-accent-amber"
                   title="Spark balance"
                 >
-                  <span style={{ fontSize: '8px' }}>✦</span>
+                  <span className="text-[8px]">✦</span>
                   {sparksBalance.toLocaleString()}
                 </span>
               </div>

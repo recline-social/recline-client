@@ -17,17 +17,17 @@ type Props = {
 };
 
 export function BroadcastButton({ serverId, sparksBalance, socket }: Props) {
-  const [open, setOpen]               = useState(false);
+  const [open, setOpen]                 = useState(false);
   const [selectedType, setSelectedType] = useState('text');
-  const [content, setContent]         = useState('');
-  const [url, setUrl]                 = useState('');
-  const [queueDepth, setQueueDepth]   = useState(0);
-  const [surgeMult, setSurgeMult]     = useState(1.0);
-  const [sending, setSending]         = useState(false);
-  const [error, setError]             = useState<string | null>(null);
-  const [success, setSuccess]         = useState<string | null>(null);
-  const textareaRef                   = useRef<HTMLTextAreaElement>(null);
-  const inputRef                      = useRef<HTMLInputElement>(null);
+  const [content, setContent]           = useState('');
+  const [url, setUrl]                   = useState('');
+  const [queueDepth, setQueueDepth]     = useState(0);
+  const [surgeMult, setSurgeMult]       = useState(1.0);
+  const [sending, setSending]           = useState(false);
+  const [error, setError]               = useState<string | null>(null);
+  const [success, setSuccess]           = useState<string | null>(null);
+  const textareaRef                     = useRef<HTMLTextAreaElement>(null);
+  const inputRef                        = useRef<HTMLInputElement>(null);
 
   const selected  = TYPES.find((t) => t.id === selectedType)!;
   const baseCost  = selected.cost;
@@ -122,60 +122,28 @@ export function BroadcastButton({ serverId, sparksBalance, socket }: Props) {
   const modal = open ? createPortal(
     // Backdrop — click outside to close
     <div
-      style={{
-        position: 'fixed', inset: 0,
-        zIndex: 9999,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        padding: '16px',
-        background: 'rgba(0,0,0,0.72)',
-        backdropFilter: 'blur(6px)',
-        WebkitBackdropFilter: 'blur(6px)',
-      }}
+      className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/65 backdrop-blur-sm"
       onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}
     >
       {/* Modal card */}
       <div
-        style={{
-          width: '100%', maxWidth: '440px',
-          maxHeight: 'calc(100vh - 32px)',
-          display: 'flex', flexDirection: 'column',
-          background: 'linear-gradient(160deg, #130b28 0%, #0d0d17 100%)',
-          border: '1px solid rgba(139,92,246,0.3)',
-          borderRadius: '20px',
-          boxShadow: '0 32px 80px rgba(0,0,0,0.8), 0 0 0 1px rgba(139,92,246,0.08), 0 0 60px rgba(139,92,246,0.06)',
-          overflow: 'hidden',
-        }}
+        className="w-full max-w-[440px] max-h-[calc(100vh-32px)] flex flex-col bg-ink-900 border border-white/[0.09] rounded-2xl shadow-[0_32px_80px_rgba(0,0,0,0.7),0_0_0_1px_rgba(255,255,255,0.02)] overflow-hidden"
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* ── Header ─────────────────────────────── */}
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '18px 20px 16px',
-          borderBottom: '1px solid rgba(255,255,255,0.06)',
-          flexShrink: 0,
-        }}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07] shrink-0">
           <div>
-            <div style={{
-              fontSize: '15px', fontWeight: 700, letterSpacing: '-0.01em',
-              background: 'linear-gradient(90deg,#fbbf24,#f59e0b)',
-              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-            }}>
-              ✦ Space Broadcast
+            <div className="flex items-center gap-2">
+              <span className="text-accent-amber text-sm">✦</span>
+              <h2 className="text-[15px] font-semibold text-ink-100 tracking-tight">Space Broadcast</h2>
             </div>
-            <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.35)', marginTop: '2px' }}>
+            <p className="text-[11px] text-ink-400 mt-0.5 leading-snug">
               Flash a message to everyone watching right now
-            </div>
+            </p>
           </div>
           <button
             onClick={close}
-            style={{
-              width: 32, height: 32, display: 'grid', placeItems: 'center',
-              borderRadius: '10px', border: '1px solid rgba(255,255,255,0.08)',
-              background: 'rgba(255,255,255,0.04)', color: 'rgba(255,255,255,0.4)',
-              cursor: 'pointer', flexShrink: 0,
-            }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.8)'; (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.08)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.4)'; (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.04)'; }}
+            className="h-8 w-8 grid place-items-center rounded-xl border border-white/[0.07] text-ink-400 hover:text-ink-100 hover:bg-white/[0.06] transition-colors shrink-0"
             aria-label="Close"
           >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -185,45 +153,39 @@ export function BroadcastButton({ serverId, sparksBalance, socket }: Props) {
         </div>
 
         {/* ── Scrollable body ─────────────────────── */}
-        <div style={{ overflowY: 'auto', flex: 1, padding: '20px' }}>
+        <div className="overflow-y-auto flex-1 p-5 space-y-4">
 
           {/* Type selector */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', marginBottom: '12px' }}>
+          <div className="grid grid-cols-4 gap-2">
             {TYPES.map((t) => {
               const sel = selectedType === t.id;
               return (
                 <button
                   key={t.id}
                   onClick={() => { setSelectedType(t.id); setError(null); setSuccess(null); }}
-                  style={{
-                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px',
-                    padding: '12px 6px',
-                    borderRadius: '14px',
-                    background: sel ? 'rgba(139,92,246,0.22)' : 'rgba(255,255,255,0.04)',
-                    border: sel ? '1.5px solid rgba(139,92,246,0.5)' : '1px solid rgba(255,255,255,0.08)',
-                    color: sel ? '#c4b5fd' : 'rgba(255,255,255,0.45)',
-                    cursor: 'pointer',
-                    transition: 'all 0.15s',
-                    boxShadow: sel ? '0 0 16px rgba(139,92,246,0.12)' : 'none',
-                  }}
+                  className={`flex flex-col items-center gap-1.5 py-3 px-1.5 rounded-xl border text-[11px] font-semibold transition-all duration-150 ${
+                    sel
+                      ? 'bg-accent-violet/10 border-accent-violet/30 text-accent-violet shadow-[0_0_14px_rgba(79,117,255,0.08)]'
+                      : 'bg-ink-800/60 border-white/[0.07] text-ink-400 hover:text-ink-200 hover:bg-ink-800 hover:border-white/[0.12]'
+                  }`}
                 >
-                  <span style={{ fontSize: '18px', lineHeight: 1 }}>{t.icon}</span>
-                  <span style={{ fontSize: '11px', fontWeight: 600 }}>{t.label}</span>
-                  <span style={{ fontSize: '9px', opacity: 0.55 }}>✦ {Math.round(t.cost * surgeMult)}</span>
+                  <span className="text-lg leading-none">{t.icon}</span>
+                  <span>{t.label}</span>
+                  <span className={`text-[10px] ${sel ? 'text-accent-amber/80' : 'text-ink-500'}`}>
+                    ✦ {Math.round(t.cost * surgeMult)}
+                  </span>
                 </button>
               );
             })}
           </div>
 
           {/* Description */}
-          <p style={{ fontSize: '11px', color: 'rgba(255,255,255,0.35)', marginBottom: '16px', lineHeight: 1.5 }}>
-            {selected.desc}
-          </p>
+          <p className="text-[12px] text-ink-400 leading-relaxed -mt-1">{selected.desc}</p>
 
           {/* Message input */}
           {needsText && (
-            <div style={{ marginBottom: '12px' }}>
-              <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'rgba(255,255,255,0.5)', marginBottom: '6px' }}>
+            <div>
+              <label className="block text-[11px] font-medium text-ink-300 mb-1.5">
                 {selectedType === 'takeover' ? 'Message text' : 'Message'}
               </label>
               <textarea
@@ -233,32 +195,16 @@ export function BroadcastButton({ serverId, sparksBalance, socket }: Props) {
                 rows={3}
                 onChange={(e) => setContent(e.target.value)}
                 placeholder="What do you want to broadcast?"
-                style={{
-                  width: '100%', resize: 'none',
-                  background: 'rgba(255,255,255,0.06)',
-                  border: '1.5px solid rgba(255,255,255,0.1)',
-                  borderRadius: '12px',
-                  padding: '12px 14px',
-                  fontSize: '13px', color: 'rgba(255,255,255,0.9)',
-                  lineHeight: 1.55,
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                  transition: 'border-color 0.15s',
-                  fontFamily: 'inherit',
-                }}
-                onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(139,92,246,0.55)'; }}
-                onBlur={(e)  => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; }}
+                className="input w-full resize-none"
               />
-              <div style={{ textAlign: 'right', fontSize: '10px', color: 'rgba(255,255,255,0.22)', marginTop: '3px' }}>
-                {content.length}/500
-              </div>
+              <div className="text-right text-[10px] text-ink-500 mt-1">{content.length}/500</div>
             </div>
           )}
 
           {/* URL input */}
           {needsUrl && (
-            <div style={{ marginBottom: '12px' }}>
-              <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'rgba(255,255,255,0.5)', marginBottom: '6px' }}>
+            <div>
+              <label className="block text-[11px] font-medium text-ink-300 mb-1.5">
                 {selectedType === 'image' ? 'Image URL' : selectedType === 'sound' ? 'Audio URL' : 'Media URL (optional)'}
               </label>
               <input
@@ -267,100 +213,44 @@ export function BroadcastButton({ serverId, sparksBalance, socket }: Props) {
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="https://..."
-                style={{
-                  width: '100%',
-                  background: 'rgba(255,255,255,0.06)',
-                  border: '1.5px solid rgba(255,255,255,0.1)',
-                  borderRadius: '12px',
-                  padding: '12px 14px',
-                  fontSize: '13px', color: 'rgba(255,255,255,0.9)',
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                  transition: 'border-color 0.15s',
-                  fontFamily: 'inherit',
-                }}
-                onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(139,92,246,0.55)'; }}
-                onBlur={(e)  => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; }}
+                className="input w-full"
               />
             </div>
           )}
 
           {/* Queue + cost */}
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '10px 14px', borderRadius: '12px', marginBottom: '10px',
-            background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)',
-          }}>
-            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)' }}>
+          <div className="flex items-center justify-between bg-ink-800/50 border border-white/[0.06] rounded-xl px-4 py-3">
+            <div className="text-[12px]">
               {queueDepth === 0
-                ? <span style={{ color: '#34d399' }}>🟢 Queue clear — sends immediately</span>
-                : <span style={{ color: '#fbbf24' }}>⏳ {queueDepth} in queue</span>
+                ? <span className="text-emerald-400">Queue clear · sends immediately</span>
+                : <span className="text-accent-amber">{queueDepth} in queue</span>
               }
               {surgeMult > 1.0 && (
-                <span style={{ color: '#f87171', marginLeft: 8, fontSize: '11px' }}>{surgeMult}× surge</span>
+                <span className="text-rose-400 ml-2 text-[11px]">{surgeMult}× surge</span>
               )}
             </div>
-            <div style={{
-              fontSize: '13px', fontWeight: 700,
-              background: canAfford ? 'linear-gradient(90deg,#fbbf24,#f59e0b)' : 'linear-gradient(90deg,#f87171,#ef4444)',
-              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-            }}>
+            <div className={`text-[13px] font-bold ${canAfford ? 'text-accent-amber' : 'text-rose-400'}`}>
               ✦ {finalCost} Sparks
             </div>
           </div>
 
           {/* Feedback messages */}
           {!canAfford && !error && (
-            <p style={{ fontSize: '11px', color: '#f87171', marginBottom: '8px' }}>
-              Not enough Sparks — balance: {sparksBalance} ✦
-            </p>
+            <p className="text-[12px] text-rose-400">Not enough Sparks — balance: {sparksBalance} ✦</p>
           )}
-          {error   && <p style={{ fontSize: '11px', color: '#f87171', marginBottom: '8px' }}>{error}</p>}
-          {success && <p style={{ fontSize: '11px', color: '#34d399', marginBottom: '8px' }}>✓ {success}</p>}
+          {error   && <p className="text-[12px] text-rose-400">{error}</p>}
+          {success && <p className="text-[12px] text-emerald-400">✓ {success}</p>}
         </div>
 
         {/* ── Footer actions (never scrolls away) ─ */}
-        <div style={{
-          display: 'flex', gap: '8px',
-          padding: '14px 20px 18px',
-          borderTop: '1px solid rgba(255,255,255,0.06)',
-          flexShrink: 0,
-        }}>
-          <button
-            onClick={close}
-            style={{
-              flex: 1, padding: '11px 0', borderRadius: '12px', fontSize: '13px',
-              fontWeight: 500, cursor: 'pointer',
-              background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.09)',
-              color: 'rgba(255,255,255,0.45)', transition: 'all 0.15s',
-              fontFamily: 'inherit',
-            }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.75)'; (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.08)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.45)'; (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.05)'; }}
-          >
-            Cancel
-          </button>
+        <div className="flex gap-2 px-5 pb-5 pt-3 border-t border-white/[0.07] shrink-0">
+          <button onClick={close} className="btn btn-ghost flex-1">Cancel</button>
           <button
             onClick={handleSend}
             disabled={sending || !canAfford}
-            style={{
-              flex: 2, padding: '11px 0', borderRadius: '12px', fontSize: '13px',
-              fontWeight: 700, cursor: sending || !canAfford ? 'not-allowed' : 'pointer',
-              background: 'linear-gradient(135deg, rgba(139,92,246,0.32) 0%, rgba(34,211,238,0.2) 100%)',
-              border: '1.5px solid rgba(139,92,246,0.4)',
-              color: '#c4b5fd', opacity: sending || !canAfford ? 0.4 : 1,
-              transition: 'all 0.15s',
-              fontFamily: 'inherit',
-              boxShadow: !sending && canAfford ? '0 0 20px rgba(139,92,246,0.15)' : 'none',
-            }}
-            onMouseEnter={(e) => {
-              if (!sending && canAfford) (e.currentTarget as HTMLButtonElement).style.background = 'linear-gradient(135deg,rgba(139,92,246,0.42) 0%,rgba(34,211,238,0.28) 100%)';
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = 'linear-gradient(135deg,rgba(139,92,246,0.32) 0%,rgba(34,211,238,0.2) 100%)';
-            }}
+            className="btn btn-primary flex-[2]"
           >
-            {sending ? 'Sending…' : `Send Broadcast · ✦ ${finalCost}`}
+            {sending ? 'Sending…' : `Send · ✦ ${finalCost}`}
           </button>
         </div>
       </div>
@@ -370,28 +260,15 @@ export function BroadcastButton({ serverId, sparksBalance, socket }: Props) {
 
   return (
     <>
+      {/* ── Trigger — amber labeled pill, visible in chat header ── */}
       <button
         onClick={() => { setOpen(true); setError(null); setSuccess(null); }}
-        style={{
-          width: 32, height: 32, display: 'grid', placeItems: 'center',
-          borderRadius: '10px', background: 'transparent',
-          border: '1px solid transparent', cursor: 'pointer',
-          color: 'rgba(251,191,36,0.65)', transition: 'all 0.15s', flexShrink: 0,
-        }}
-        onMouseEnter={(e) => {
-          (e.currentTarget as HTMLButtonElement).style.color = '#fbbf24';
-          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(251,191,36,0.1)';
-          (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(251,191,36,0.2)';
-        }}
-        onMouseLeave={(e) => {
-          (e.currentTarget as HTMLButtonElement).style.color = 'rgba(251,191,36,0.65)';
-          (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
-          (e.currentTarget as HTMLButtonElement).style.borderColor = 'transparent';
-        }}
+        className="flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-accent-amber/10 border border-accent-amber/25 text-accent-amber text-[12px] font-semibold hover:bg-accent-amber/[0.18] hover:border-accent-amber/40 transition-all duration-150 shrink-0"
         title="Send a space broadcast"
         aria-label="Send broadcast"
       >
-        <span style={{ fontSize: '14px', lineHeight: 1, userSelect: 'none' }}>✦</span>
+        <span className="text-[10px] leading-none select-none">✦</span>
+        <span>Broadcast</span>
       </button>
       {modal}
     </>

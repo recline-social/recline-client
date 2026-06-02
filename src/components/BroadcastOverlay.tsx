@@ -17,17 +17,12 @@ const AUTO_DISMISS: Record<string, number> = {
 };
 
 // ── Progress bar ──────────────────────────────────────────────────────────────
-function ProgressBar({ duration, color }: { duration: number; color: string }) {
+function ProgressBar({ duration }: { duration: number }) {
   return (
     <div className="absolute bottom-0 left-0 right-0 h-[2px] overflow-hidden rounded-b-2xl">
       <div
-        style={{
-          height: '100%',
-          background: color,
-          width: '100%',
-          transformOrigin: 'left',
-          animation: `bc-shrink ${duration}ms linear forwards`,
-        }}
+        className="h-full w-full bg-accent-violet/60 origin-left"
+        style={{ animation: `bc-shrink ${duration}ms linear forwards` }}
       />
     </div>
   );
@@ -38,29 +33,15 @@ function SenderBadge({ name, cost, type }: { name: string; cost: number; type: s
   const icon = type === 'sound' ? '♫' : type === 'image' ? '🖼' : type === 'takeover' ? '⚡' : '✦';
   return (
     <div className="flex items-center gap-2 flex-wrap">
-      <div
-        className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold"
-        style={{
-          background: 'rgba(139,92,246,0.18)',
-          border: '1px solid rgba(139,92,246,0.28)',
-          color: '#c4b5fd',
-        }}
-      >
+      <span className="pill bg-accent-violet/10 text-accent-violet border border-accent-violet/20">
         <span>{icon}</span>
         <span>Space Broadcast</span>
-      </div>
-      <span className="text-[11px] text-white/50">by <span className="text-white/75 font-medium">{name}</span></span>
+      </span>
+      <span className="text-[11px] text-ink-400">
+        by <span className="text-ink-200 font-medium">{name}</span>
+      </span>
       {cost > 0 && (
-        <span
-          className="text-[11px] font-semibold"
-          style={{
-            background: 'linear-gradient(90deg,#fbbf24,#f59e0b)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-          }}
-        >
-          ✦ {cost}
-        </span>
+        <span className="text-[11px] font-semibold text-accent-amber">✦ {cost}</span>
       )}
     </div>
   );
@@ -104,31 +85,20 @@ function BroadcastItem({ bc, onDone }: { bc: BroadcastPayload; onDone: () => voi
           transition: 'transform 0.4s cubic-bezier(0.22,1,0.36,1), opacity 0.3s ease',
         }}
       >
-        <div
-          className="relative rounded-2xl overflow-hidden shadow-2xl"
-          style={{
-            background: 'linear-gradient(135deg, #0f0a1e 0%, #0d0d16 100%)',
-            border: '1px solid rgba(139,92,246,0.3)',
-            boxShadow: '0 16px 48px rgba(0,0,0,0.7), 0 0 0 1px rgba(139,92,246,0.07), 0 0 40px rgba(139,92,246,0.06)',
-          }}
-        >
-          {/* Accent glow top edge */}
-          <div
-            className="absolute top-0 left-0 right-0 h-px"
-            style={{ background: 'linear-gradient(90deg, transparent 0%, rgba(139,92,246,0.6) 50%, transparent 100%)' }}
-          />
+        <div className="relative rounded-2xl overflow-hidden bg-ink-900 border border-white/[0.09] shadow-[0_16px_48px_rgba(0,0,0,0.6),0_0_0_1px_rgba(255,255,255,0.02)]">
+          {/* Thin top accent line */}
+          <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-accent-violet/50 to-transparent" />
+          {/* Left accent strip */}
+          <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-accent-violet rounded-l-2xl" />
 
-          <div className="px-4 pt-4 pb-3">
+          <div className="pl-5 pr-4 pt-3.5 pb-3">
             <div className="flex items-start gap-3">
-              {/* Icon */}
-              <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-base select-none"
-                style={{
-                  background: 'linear-gradient(135deg,rgba(139,92,246,0.25),rgba(34,211,238,0.15))',
-                  border: '1px solid rgba(139,92,246,0.3)',
-                  color: bc.type === 'sound' ? '#22d3ee' : '#a78bfa',
-                }}
-              >
+              {/* Icon tile */}
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-sm select-none border ${
+                bc.type === 'sound'
+                  ? 'bg-ink-800 border-white/[0.08] text-accent-teal'
+                  : 'bg-accent-violet/10 border-accent-violet/20 text-accent-violet'
+              }`}>
                 {bc.type === 'sound' ? '♫' : '✦'}
               </div>
 
@@ -136,7 +106,7 @@ function BroadcastItem({ bc, onDone }: { bc: BroadcastPayload; onDone: () => voi
               <div className="flex-1 min-w-0">
                 <SenderBadge name={bc.senderName} cost={bc.sparkCost} type={bc.type} />
                 {bc.contentText && (
-                  <p className="mt-2 text-[14px] text-white/90 font-medium leading-snug break-words">
+                  <p className="mt-2 text-[14px] text-ink-100 font-medium leading-snug break-words">
                     {bc.contentText}
                   </p>
                 )}
@@ -153,7 +123,7 @@ function BroadcastItem({ bc, onDone }: { bc: BroadcastPayload; onDone: () => voi
               {/* Dismiss */}
               <button
                 onClick={dismiss}
-                className="shrink-0 w-6 h-6 grid place-items-center rounded-lg text-white/25 hover:text-white/60 hover:bg-white/[0.06] transition-colors"
+                className="shrink-0 w-6 h-6 grid place-items-center rounded-lg text-ink-500 hover:text-ink-200 hover:bg-white/[0.06] transition-colors"
                 aria-label="Dismiss"
               >
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -163,7 +133,7 @@ function BroadcastItem({ bc, onDone }: { bc: BroadcastPayload; onDone: () => voi
             </div>
           </div>
 
-          <ProgressBar duration={duration} color="rgba(139,92,246,0.6)" />
+          <ProgressBar duration={duration} />
         </div>
       </div>
     );
@@ -175,59 +145,46 @@ function BroadcastItem({ bc, onDone }: { bc: BroadcastPayload; onDone: () => voi
       <div
         className="fixed inset-0 z-[150] flex items-center justify-center p-6 pointer-events-none"
         style={{
-          background: visible ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0)',
-          backdropFilter: visible ? 'blur(3px)' : 'blur(0px)',
+          background: visible ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0)',
+          backdropFilter: visible ? 'blur(4px)' : 'blur(0px)',
           transition: 'background 0.4s ease, backdrop-filter 0.4s ease',
         }}
       >
         <div
-          className="relative w-full max-w-lg rounded-2xl overflow-hidden shadow-2xl pointer-events-auto"
+          className="relative w-full max-w-lg rounded-2xl overflow-hidden bg-ink-900 border border-white/[0.09] shadow-[0_32px_80px_rgba(0,0,0,0.8)] pointer-events-auto"
           style={{
-            background: 'linear-gradient(160deg,#0f0a1e 0%,#0d0d16 100%)',
-            border: '1px solid rgba(139,92,246,0.28)',
-            boxShadow: '0 32px 80px rgba(0,0,0,0.8), 0 0 60px rgba(139,92,246,0.08)',
             opacity: visible ? 1 : 0,
             transform: visible ? 'translateY(0) scale(1)' : 'translateY(20px) scale(0.94)',
             transition: 'opacity 0.4s ease, transform 0.45s cubic-bezier(0.22,1,0.36,1)',
           }}
         >
-          <div
-            className="absolute top-0 left-0 right-0 h-px"
-            style={{ background: 'linear-gradient(90deg,transparent,rgba(139,92,246,0.6),transparent)' }}
-          />
+          {/* Top accent line */}
+          <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-accent-violet/50 to-transparent z-10" />
 
           {bc.contentUrl && (
-            <div className="relative">
-              <img
-                src={bc.contentUrl}
-                alt="Broadcast"
-                className="w-full max-h-[55vh] object-contain"
-                style={{ background: 'rgba(0,0,0,0.3)' }}
-              />
-            </div>
+            <img
+              src={bc.contentUrl}
+              alt="Broadcast"
+              className="w-full max-h-[55vh] object-contain bg-ink-950/50"
+            />
           )}
 
           <div className="px-5 py-4 flex items-center justify-between gap-3">
             <div className="min-w-0 flex-1">
               <SenderBadge name={bc.senderName} cost={bc.sparkCost} type={bc.type} />
               {bc.contentText && (
-                <p className="mt-1.5 text-[13px] text-white/80 leading-snug">{bc.contentText}</p>
+                <p className="mt-1.5 text-[13px] text-ink-200 leading-snug">{bc.contentText}</p>
               )}
             </div>
             <button
               onClick={dismiss}
-              className="shrink-0 px-3 py-1.5 rounded-xl text-[12px] font-medium transition-colors"
-              style={{
-                background: 'rgba(255,255,255,0.06)',
-                border: '1px solid rgba(255,255,255,0.1)',
-                color: 'rgba(255,255,255,0.5)',
-              }}
+              className="btn btn-ghost shrink-0 text-[12px] px-3 py-1.5"
             >
               Dismiss
             </button>
           </div>
 
-          <ProgressBar duration={duration} color="rgba(139,92,246,0.5)" />
+          <ProgressBar duration={duration} />
         </div>
       </div>
     );
@@ -238,64 +195,41 @@ function BroadcastItem({ bc, onDone }: { bc: BroadcastPayload; onDone: () => voi
     <div
       className="fixed inset-0 z-[150] flex items-center justify-center"
       style={{
-        background: visible ? 'rgba(0,0,0,0.9)' : 'rgba(0,0,0,0)',
+        background: visible ? 'rgba(0,0,0,0.88)' : 'rgba(0,0,0,0)',
         backdropFilter: visible ? 'blur(12px) saturate(0.6)' : 'blur(0px)',
         transition: 'background 0.5s ease, backdrop-filter 0.5s ease',
       }}
     >
       {/* Ambient glow */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background: visible
-            ? 'radial-gradient(ellipse 70% 50% at 50% 40%, rgba(139,92,246,0.12) 0%, transparent 70%)'
-            : 'none',
-          transition: 'background 0.5s ease',
-        }}
-      />
+      <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_70%_50%_at_50%_40%,rgba(79,117,255,0.07)_0%,transparent_70%)]" />
 
       <div
-        className="relative w-full max-w-xl mx-6 rounded-3xl overflow-hidden shadow-2xl"
+        className="relative w-full max-w-xl mx-6 rounded-3xl overflow-hidden bg-ink-950/95 backdrop-blur-xl border border-white/[0.08] shadow-[0_40px_100px_rgba(0,0,0,0.85),0_0_0_1px_rgba(255,255,255,0.02)]"
         style={{
-          background: 'linear-gradient(160deg,rgba(18,10,38,0.99) 0%,rgba(11,11,20,0.99) 100%)',
-          border: '1px solid rgba(139,92,246,0.32)',
-          boxShadow: '0 40px 100px rgba(0,0,0,0.85), 0 0 80px rgba(139,92,246,0.1)',
           opacity: visible ? 1 : 0,
           transform: visible ? 'translateY(0) scale(1)' : 'translateY(32px) scale(0.93)',
           transition: 'opacity 0.5s ease, transform 0.5s cubic-bezier(0.22,1,0.36,1)',
         }}
       >
-        {/* Top accent line */}
-        <div
-          className="h-[2px] w-full"
-          style={{ background: 'linear-gradient(90deg,transparent,rgba(139,92,246,0.8),rgba(34,211,238,0.5),transparent)' }}
-        />
+        {/* 2px dramatic top accent line — violet bleeding into teal */}
+        <div className="h-[2px] w-full bg-gradient-to-r from-transparent via-accent-violet to-accent-teal/60" />
 
         {bc.contentUrl && (
           <img
             src={bc.contentUrl}
             alt="Broadcast"
-            className="w-full max-h-64 object-contain"
-            style={{ background: 'rgba(0,0,0,0.4)' }}
+            className="w-full max-h-64 object-contain bg-ink-950/50"
           />
         )}
 
         <div className="px-8 py-7 text-center">
-          {/* ✦ glyph */}
-          <div
-            className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-5 text-base select-none"
-            style={{
-              background: 'linear-gradient(135deg,rgba(139,92,246,0.3),rgba(34,211,238,0.18))',
-              border: '1px solid rgba(139,92,246,0.4)',
-              color: '#a78bfa',
-              boxShadow: '0 0 24px rgba(139,92,246,0.2)',
-            }}
-          >
+          {/* Icon tile */}
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-5 text-base select-none bg-accent-violet/10 border border-accent-violet/25 text-accent-violet shadow-[0_0_24px_rgba(79,117,255,0.15)]">
             ⚡
           </div>
 
           {bc.contentText && (
-            <p className="text-xl font-semibold text-white/95 leading-snug mb-4 break-words">
+            <p className="text-xl font-semibold text-ink-100 leading-snug mb-4 break-words">
               {bc.contentText}
             </p>
           )}
@@ -304,22 +238,12 @@ function BroadcastItem({ bc, onDone }: { bc: BroadcastPayload; onDone: () => voi
             <SenderBadge name={bc.senderName} cost={bc.sparkCost} type={bc.type} />
           </div>
 
-          <button
-            onClick={dismiss}
-            className="px-8 py-2.5 rounded-xl text-sm font-semibold transition-all"
-            style={{
-              background: 'rgba(139,92,246,0.2)',
-              border: '1px solid rgba(139,92,246,0.35)',
-              color: '#c4b5fd',
-            }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(139,92,246,0.32)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(139,92,246,0.2)'; }}
-          >
+          <button onClick={dismiss} className="btn btn-primary px-8">
             Dismiss
           </button>
         </div>
 
-        <ProgressBar duration={duration} color="rgba(139,92,246,0.7)" />
+        <ProgressBar duration={duration} />
       </div>
     </div>
   );
