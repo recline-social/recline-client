@@ -221,10 +221,20 @@ export type DmCallState = {
   hasVideo: boolean;
   isMuted: boolean;
   isVideoOff: boolean;
+  /** Camera + microphone stream */
   localStream: MediaStream | null;
+  /** Our screen share stream (null when not sharing) */
+  localScreenStream: MediaStream | null;
+  /** Whether we are currently broadcasting our screen */
+  isScreenSharing: boolean;
+  /** Peer's camera + audio stream */
   peerStream: MediaStream | null;
+  /** Peer's screen share stream — populated via renegotiation when they share */
+  peerScreenStream: MediaStream | null;
   pc: RTCPeerConnection | null;
   startedAt: number | null;  // unix ms when status hit 'active'
+  /** Peer audio volume, 0–1. Default 1. */
+  peerVolume: number;
 };
 
 export type FriendStatus = 'pending' | 'accepted';

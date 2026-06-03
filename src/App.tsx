@@ -1072,9 +1072,13 @@ export default function App() {
         isMuted: false,
         isVideoOff: false,
         localStream: null,
+        localScreenStream: null,
+        isScreenSharing: false,
         peerStream: null,
+        peerScreenStream: null,
         pc: null,
         startedAt: null,
+        peerVolume: 1,
       });
     };
 
@@ -1114,7 +1118,9 @@ export default function App() {
     const onDmCallOffer = async (data: { dmChannelId: string; sdp: RTCSessionDescriptionInit }) => {
       const call = dmCallRef.current;
       if (!call || call.dmChannelId !== data.dmChannelId) return;
-      if (call.status !== 'connecting' || !call.pc) return;
+      if (!call.pc) return;
+      // Accept offers during initial SDP exchange (connecting) AND renegotiation (active — screen share)
+      if (call.status !== 'connecting' && call.status !== 'active') return;
       const pc = call.pc;
       await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
       const answer = await pc.createAnswer();
@@ -2011,6 +2017,7 @@ export default function App() {
       if (!prev) return null;
       prev.pc?.close();
       prev.localStream?.getTracks().forEach((t) => t.stop());
+      prev.localScreenStream?.getTracks().forEach((t) => t.stop());
       return null;
     });
     playCallSound('leave_call');
@@ -2040,9 +2047,13 @@ export default function App() {
       isMuted: false,
       isVideoOff: false,
       localStream,
+      localScreenStream: null,
+      isScreenSharing: false,
       peerStream: null,
+      peerScreenStream: null,
       pc: null,
       startedAt: null,
+      peerVolume: 1,
     });
     playCallSound('join_call');
     socketRef.current?.emit('dm:call:invite', { dmChannelId: dmId, hasVideo });
@@ -2077,7 +2088,17 @@ export default function App() {
     // onDmCallAccepted fires (potentially before the React re-render), it sees the
     // correct localStream. Without this the callee's video tracks are never added
     // to the PeerConnection because localStream is still null in the ref.
-    const nextCallState = { ...call, status: 'connecting' as const, hasVideo: withVideo, localStream, pc: null };
+    const nextCallState: import('./types').DmCallState = {
+      ...call,
+      status: 'connecting',
+      hasVideo: withVideo,
+      localStream,
+      localScreenStream: null,
+      isScreenSharing: false,
+      peerScreenStream: null,
+      peerVolume: call.peerVolume ?? 1,
+      pc: null,
+    };
     dmCallRef.current = nextCallState;
     setDmCall(nextCallState);
     playCallSound('join_call');
@@ -2089,13 +2110,49 @@ export default function App() {
     if (localStream) {
       for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
     }
+
     pc.onicecandidate = ({ candidate }) => {
       if (candidate) socketRef.current?.emit('dm:call:ice', { dmChannelId, candidate: candidate.toJSON() });
     };
-    pc.ontrack = ({ streams }) => {
+
+    // Stream-ID-based track separation:
+    //   First stream ID seen = peer's main stream (audio + camera)
+    //   Any NEW stream ID later = screen share stream (added via renegotiation)
+    let mainPeerStreamId: string | null = null;
+    pc.ontrack = ({ track, streams }) => {
       const stream = streams[0];
-      if (stream) setDmCall((prev) => prev ? { ...prev, peerStream: stream } : prev);
+      if (!stream) return;
+      if (!mainPeerStreamId || stream.id === mainPeerStreamId) {
+        mainPeerStreamId = stream.id;
+        setDmCall((prev) => prev ? { ...prev, peerStream: stream } : prev);
+      } else {
+        // New stream = peer started screen sharing
+        setDmCall((prev) => prev ? { ...prev, peerScreenStream: stream } : prev);
+        track.onended = () => setDmCall((prev) => prev ? { ...prev, peerScreenStream: null } : prev);
+      }
     };
+
+    // Renegotiation for mid-call changes (screen share start/stop).
+    // Guard: only renegotiate when already active — initial offer is sent manually.
+    let isNegotiating = false;
+    pc.onnegotiationneeded = async () => {
+      const call = dmCallRef.current;
+      if (!call || call.status !== 'active') return;
+      if (isNegotiating) return;
+      isNegotiating = true;
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        if (pc.localDescription) {
+          socketRef.current?.emit('dm:call:offer', { dmChannelId, sdp: pc.localDescription });
+        }
+      } catch (err) {
+        console.error('[DM renegotiation] offer failed:', err);
+      } finally {
+        isNegotiating = false;
+      }
+    };
+
     pc.oniceconnectionstatechange = () => {
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         setDmCall((prev) => prev ? { ...prev, status: 'active', startedAt: Date.now() } : prev);
@@ -2134,6 +2191,51 @@ export default function App() {
     const newOff = !call.isVideoOff;
     call.localStream.getVideoTracks().forEach((t) => { t.enabled = !newOff; });
     setDmCall((prev) => prev ? { ...prev, isVideoOff: newOff } : prev);
+  }
+
+  async function startDmScreenShare() {
+    const call = dmCallRef.current;
+    if (!call?.pc || call.status !== 'active' || call.isScreenSharing) return;
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 15, max: 30 } },
+        audio: false,
+      });
+      const screenTrack = screenStream.getVideoTracks()[0];
+      if (!screenTrack) { screenStream.getTracks().forEach((t) => t.stop()); return; }
+
+      // Add track to its own MediaStream so the receiver distinguishes it from camera via stream ID
+      call.pc.addTrack(screenTrack, screenStream); // triggers onnegotiationneeded → renegotiation
+
+      // User stops sharing via browser's native "Stop sharing" button
+      screenTrack.onended = () => stopDmScreenShare();
+
+      const updated = { ...call, localScreenStream: screenStream, isScreenSharing: true };
+      dmCallRef.current = updated;
+      setDmCall(updated);
+    } catch (err: any) {
+      if (err?.name !== 'NotAllowedError') console.error('[DM screen share] getDisplayMedia:', err);
+    }
+  }
+
+  function stopDmScreenShare() {
+    const call = dmCallRef.current;
+    if (!call?.pc || !call.isScreenSharing) return;
+    // Stop track(s)
+    call.localScreenStream?.getTracks().forEach((t) => t.stop());
+    // Remove sender from PC — triggers renegotiation (onnegotiationneeded)
+    for (const sender of call.pc.getSenders()) {
+      if (sender.track && call.localScreenStream?.getTracks().includes(sender.track)) {
+        call.pc.removeTrack(sender);
+      }
+    }
+    const updated = { ...call, localScreenStream: null, isScreenSharing: false };
+    dmCallRef.current = updated;
+    setDmCall(updated);
+  }
+
+  function setDmPeerVolume(vol: number) {
+    setDmCall((prev) => prev ? { ...prev, peerVolume: Math.max(0, Math.min(1, vol)) } : prev);
   }
 
   function handleDmReact(dmMessageId: string, dmChannelId: string, emoji: string) {
@@ -2714,6 +2816,9 @@ export default function App() {
           myId={user.id}
           onMute={toggleDmMute}
           onToggleVideo={toggleDmVideo}
+          onScreenShare={startDmScreenShare}
+          onStopScreenShare={stopDmScreenShare}
+          onSetPeerVolume={setDmPeerVolume}
           onHangUp={hangUpDmCall}
         />
       )}
