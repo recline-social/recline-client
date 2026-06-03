@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, setToken } from '../lib/api';
-import { getServerUrl } from '../lib/serverUrl';
 import type { User } from '../types';
 
 // Site key is PUBLIC — baked in at Vite build time. Empty string → widget disabled.
@@ -16,7 +15,7 @@ declare global {
   }
 }
 
-type Props = { onAuthed: (user: User) => void; onSwitchServer?: () => void };
+type Props = { onAuthed: (user: User, password: string) => void };
 
 type Screen =
   | 'main'          // login / signup form
@@ -318,7 +317,7 @@ function ResetScreen({ onBack }: { onBack: () => void }) {
 }
 
 // ── Main auth shell ───────────────────────────────────────────────────────────
-export function Auth({ onAuthed, onSwitchServer }: Props) {
+export function Auth({ onAuthed }: Props) {
   const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [screen, setScreen] = useState<Screen>('main');
 
@@ -431,7 +430,7 @@ export function Auth({ onAuthed, onSwitchServer }: Props) {
           setScreen('totp');
         } else {
           setToken(r.token, remember);
-          onAuthed(r.user);
+          onAuthed(r.user, password);
         }
       }
     } catch (err: any) {
@@ -451,7 +450,7 @@ export function Auth({ onAuthed, onSwitchServer }: Props) {
           codes={backupCodes}
           onDone={() => {
             setToken(pendingSessionToken, remember);
-            onAuthed(pendingUser);
+            onAuthed(pendingUser, password);
           }}
         />
       </div>
@@ -465,7 +464,7 @@ export function Auth({ onAuthed, onSwitchServer }: Props) {
           pendingToken={pendingTotpToken}
           onSuccess={(token, user) => {
             setToken(token, remember);
-            onAuthed(user);
+            onAuthed(user, password);
           }}
           onBack={() => {
             setScreen('main');
@@ -501,21 +500,6 @@ export function Auth({ onAuthed, onSwitchServer }: Props) {
           </div>
         </div>
 
-        {onSwitchServer && (
-          <div className="flex items-center gap-2.5 mb-5 px-3 py-2.5 rounded-xl bg-ink-800/50 border border-white/[0.07]">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400/80 shrink-0" />
-            <span className="text-[12px] text-ink-300/70 font-mono truncate flex-1 leading-none">
-              {getServerUrl()}
-            </span>
-            <button
-              type="button"
-              onClick={onSwitchServer}
-              className="text-[11px] text-ink-400 hover:text-ink-100 transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2.5 py-1 shrink-0"
-            >
-              Change
-            </button>
-          </div>
-        )}
 
         <div className="flex p-1 bg-ink-800/60 rounded-xl mb-5 border border-white/5">
           {(['login', 'signup'] as const).map((m) => (

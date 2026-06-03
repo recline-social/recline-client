@@ -18,8 +18,7 @@ import { DmCallIncoming } from './components/DmCallIncoming';
 import { DmCallWindow } from './components/DmCallWindow';
 import type { DmCallState } from './types';
 import { ServerHome } from './components/ServerHome';
-import { ServerSetup } from './components/ServerSetup';
-import { isDesktop, getServerUrl, setServerUrl } from './lib/serverUrl';
+import { getServerUrl } from './lib/serverUrl';
 import { api, getToken, setToken } from './lib/api';
 import { connectSocket, disconnectSocket } from './lib/socket';
 import {
@@ -37,6 +36,9 @@ import {
   loadDmKeyPair,
   saveDmKeyPair,
   exportPublicKeyJwk,
+  exportPrivateKeyJwk,
+  encryptDmKeyBackup,
+  decryptDmKeyBackup,
   importPeerPublicKey,
   deriveDmKey,
   cacheDmKey,
@@ -331,9 +333,6 @@ export default function App() {
   // socket connection state shown in the UI
   const [connectionState, setConnectionState] = useState<'connected' | 'connecting' | 'disconnected'>('disconnected');
 
-  // desktop builds need a configured server URL before anything else
-  const [needsServer, setNeedsServer] = useState<boolean>(() => isDesktop() && !getServerUrl());
-
   // mobile sidebar visibility
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileMembersOpen, setMobileMembersOpen] = useState(false);
@@ -379,8 +378,10 @@ export default function App() {
   // browser notification permission (requested once after login)
   const notifPermRef = useRef<NotificationPermission>('default');
 
-  // ECDH DM key pair — generated once, persisted in localStorage, held in memory
+  // ECDH DM key pair — generated once, persisted in IndexedDB, held in memory
   const dmKeyPairRef = useRef<CryptoKeyPair | null>(null);
+  // Password held briefly (login → useEffect tick) for key backup setup, then cleared
+  const setupPasswordRef = useRef<string>('');
   // Fresh DM list accessible in socket callbacks without stale-closure issues
   const dmsRef = useRef(dms);
   useEffect(() => { dmsRef.current = dms; }, [dms]);
@@ -505,10 +506,6 @@ export default function App() {
 
   /* ------------------------ Auth bootstrap ------------------------ */
   useEffect(() => {
-    if (needsServer) {
-      setAuthChecked(true);
-      return;
-    }
     if (!getToken()) {
       setAuthChecked(true);
       return;
@@ -526,7 +523,7 @@ export default function App() {
         setToken(null);
       })
       .finally(() => setAuthChecked(true));
-  }, [needsServer]);
+  }, []);
 
   /* ------------------------ Socket lifecycle ------------------------ */
   useEffect(() => {
@@ -1297,18 +1294,10 @@ export default function App() {
         setKeysReady((prev) => ({ ...prev, ...restored }));
       }
     });
-    // Init ECDH DM key pair (generate once, persist in localStorage)
-    (async () => {
-      let pair = await loadDmKeyPair();
-      if (!pair) {
-        pair = await generateDmKeyPair();
-        await saveDmKeyPair(pair);
-      }
-      dmKeyPairRef.current = pair;
-      // Register public key with server so peers can derive shared secrets
-      const pubJwk = await exportPublicKeyJwk(pair.publicKey);
-      await api.registerPublicKey(pubJwk).catch(() => {/* non-fatal */});
-    })();
+    // Init ECDH DM key pair — restore from IndexedDB, server backup, or generate fresh.
+    const _setupPw = setupPasswordRef.current;
+    setupPasswordRef.current = ''; // clear immediately — password must not linger
+    setupDmKeys(_setupPw).catch(() => {/* non-fatal */});
 
     // Pre-fetch DMs
     api.listDms().then((r) => setDms(r.dms)).catch(() => {});
@@ -2375,6 +2364,85 @@ export default function App() {
     disconnectSocket();
   }
 
+  /**
+   * Set up the ECDH DM key pair on login.
+   * Priority: (1) existing IndexedDB key → (2) server backup → (3) generate fresh.
+   * When a key already exists locally, uploads a backup if the server has none yet.
+   */
+  async function setupDmKeys(password: string): Promise<void> {
+    let pair = await loadDmKeyPair();
+
+    if (pair) {
+      dmKeyPairRef.current = pair;
+      const pubJwk = await exportPublicKeyJwk(pair.publicKey);
+      await api.registerPublicKey(pubJwk).catch(() => {});
+      // Upload backup if the server doesn't have one yet
+      if (password) {
+        try {
+          const { backup } = await api.getDmKeyBackup();
+          if (!backup) {
+            const privJwk = await exportPrivateKeyJwk(pair.privateKey);
+            if (privJwk) {
+              const blob = await encryptDmKeyBackup(privJwk, password);
+              await api.putDmKeyBackup(blob);
+            }
+          }
+        } catch { /* non-fatal */ }
+      }
+      return;
+    }
+
+    // No local key — try restoring from server backup
+    if (password) {
+      try {
+        const { backup } = await api.getDmKeyBackup();
+        if (backup) {
+          const restored = await decryptDmKeyBackup(backup, password);
+          if (restored) {
+            await saveDmKeyPair(restored);
+            dmKeyPairRef.current = restored;
+            const pubJwk = await exportPublicKeyJwk(restored.publicKey);
+            await api.registerPublicKey(pubJwk).catch(() => {});
+            return;
+          }
+        }
+      } catch { /* non-fatal — fall through to generate */ }
+    }
+
+    // Generate a fresh key pair
+    pair = await generateDmKeyPair();
+    await saveDmKeyPair(pair);
+    dmKeyPairRef.current = pair;
+    const pubJwk = await exportPublicKeyJwk(pair.publicKey);
+    await api.registerPublicKey(pubJwk).catch(() => {});
+    if (password) {
+      try {
+        const privJwk = await exportPrivateKeyJwk(pair.privateKey);
+        if (privJwk) {
+          const blob = await encryptDmKeyBackup(privJwk, password);
+          await api.putDmKeyBackup(blob);
+        }
+      } catch { /* non-fatal */ }
+    }
+  }
+
+  /**
+   * Sync the local DM key pair from the server backup.
+   * Used when a user has different keys on two devices — call from Security tab.
+   * Clears the current local key and restores the backup using the provided password.
+   */
+  async function handleSyncDmKey(password: string): Promise<void> {
+    const { backup } = await api.getDmKeyBackup();
+    if (!backup) throw new Error('No key backup found on server. Log in on your other device first.');
+    const restored = await decryptDmKeyBackup(backup, password);
+    if (!restored) throw new Error('Wrong password or corrupted backup.');
+    await saveDmKeyPair(restored);
+    dmKeyPairRef.current = restored;
+    clearAllDmKeys();
+    const pubJwk = await exportPublicKeyJwk(restored.publicKey);
+    await api.registerPublicKey(pubJwk).catch(() => {});
+  }
+
   async function handleRotateKey(password: string): Promise<void> {
     // CRYPTO-012: server update must succeed BEFORE local state is committed.
     // 1. Generate a new key pair (do not archive yet, do not touch dmKeyPairRef).
@@ -2395,18 +2463,9 @@ export default function App() {
     clearAllDmKeys();
   }
 
-  function switchServer() {
-    // desktop-only: forget the current Recline server and prompt for a new one
-    logout();
-    clearAllKeys(); // belt-and-suspenders: flush any keys not caught by logout (#27)
-    setServerUrl(null);
-    setNeedsServer(true);
-  }
-
   /* ------------------------ Render ------------------------ */
-  if (needsServer) return <ServerSetup onDone={() => setNeedsServer(false)} />;
   if (!authChecked) return <div className="h-full grid place-items-center text-ink-300">Loading…</div>;
-  if (!user) return <Auth onAuthed={setUser} onSwitchServer={isDesktop() ? switchServer : undefined} />;
+  if (!user) return <Auth onAuthed={(u, pw) => { setupPasswordRef.current = pw; setUser(u); }} />;
 
   const channels = activeServerId ? channelsByServer[activeServerId] ?? [] : [];
   const members = activeServerId ? membersByServer[activeServerId] ?? [] : [];
@@ -2471,7 +2530,6 @@ export default function App() {
         onLogout={logout}
         onOpenProfile={() => setProfileOpen(true)}
         onViewProfile={() => setProfileCardUserId(user.id)}
-        onSwitchServer={isDesktop() ? switchServer : undefined}
         me={user}
         unreadByServer={unreadByServer}
         connectionState={connectionState}
@@ -2767,6 +2825,7 @@ export default function App() {
         initialTab={profileInitialTab}
         onUpdated={(u) => setUser(u)}
         onRotateKey={handleRotateKey}
+        onSyncKey={handleSyncDmKey}
         isSupporter={isSupporter}
         sparksBalance={sparksBalance}
         onSparksUpdate={setSparksBalance}

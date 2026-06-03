@@ -165,22 +165,86 @@ async function idbClear(): Promise<void> {
 }
 
 export async function generateDmKeyPair(): Promise<CryptoKeyPair> {
-  // Generate with extractable:true so we can export the public key JWK,
-  // then re-import the private key as non-extractable before storing.
-  const raw = await crypto.subtle.generateKey(
+  // extractable:true so we can export the private key for cross-device backup.
+  // The backup is encrypted with the user's password before upload, so the raw
+  // private JWK never leaves the client unencrypted.
+  return crypto.subtle.generateKey(
     { name: 'ECDH', namedCurve: 'P-256' },
     true,
     ['deriveKey'],
   );
-  // Re-import private key as non-extractable — raw key bytes are never stored.
-  const privJwk = await crypto.subtle.exportKey('jwk', raw.privateKey);
-  const privateKey = await crypto.subtle.importKey(
-    'jwk', privJwk,
-    { name: 'ECDH', namedCurve: 'P-256' },
-    false, // NON-extractable
-    ['deriveKey'],
+}
+
+/** Export the private key as JWK for backup. Returns null for legacy non-extractable keys. */
+export async function exportPrivateKeyJwk(privateKey: CryptoKey): Promise<JsonWebKey | null> {
+  try {
+    return await crypto.subtle.exportKey('jwk', privateKey);
+  } catch {
+    return null; // non-extractable — cannot back up; user must rotate key
+  }
+}
+
+/** Derive an AES-GCM-256 key from a password + random salt (PBKDF2 / 200k / SHA-256). */
+async function deriveBackupKey(password: string, salt: Uint8Array<ArrayBuffer>): Promise<CryptoKey> {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 200_000, hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
   );
-  return { publicKey: raw.publicKey, privateKey };
+}
+
+function b64(buf: ArrayBuffer | Uint8Array): string {
+  const bytes = buf instanceof ArrayBuffer ? new Uint8Array(buf) : buf;
+  return btoa(String.fromCharCode(...bytes));
+}
+function unb64(s: string): Uint8Array<ArrayBuffer> {
+  const decoded = atob(s);
+  const out = new Uint8Array(decoded.length);
+  for (let i = 0; i < decoded.length; i++) out[i] = decoded.charCodeAt(i);
+  return out;
+}
+
+/**
+ * Encrypt a private key JWK with the user's password.
+ * Returns a JSON string suitable for server storage — the server sees only opaque ciphertext.
+ */
+export async function encryptDmKeyBackup(privJwk: JsonWebKey, password: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv   = crypto.getRandomValues(new Uint8Array(12));
+  const key  = await deriveBackupKey(password, salt);
+  const ct   = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    new TextEncoder().encode(JSON.stringify(privJwk)),
+  );
+  return JSON.stringify({ v: 1, salt: b64(salt), iv: b64(iv), ct: b64(ct) });
+}
+
+/**
+ * Decrypt a backup blob and reconstruct the full CryptoKeyPair.
+ * Returns null if the password is wrong or the blob is corrupt.
+ */
+export async function decryptDmKeyBackup(blob: string, password: string): Promise<CryptoKeyPair | null> {
+  try {
+    const { v, salt, iv, ct } = JSON.parse(blob) as { v: number; salt: string; iv: string; ct: string };
+    if (v !== 1) return null;
+    const key      = await deriveBackupKey(password, unb64(salt));
+    const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv) }, key, unb64(ct));
+    const privJwk  = JSON.parse(new TextDecoder().decode(plainBuf)) as JsonWebKey;
+    // Reconstruct the public key from the private JWK — P-256 JWKs carry x and y.
+    const pubJwk: JsonWebKey = { kty: privJwk.kty, crv: privJwk.crv, x: privJwk.x, y: privJwk.y };
+    const [publicKey, privateKey] = await Promise.all([
+      crypto.subtle.importKey('jwk', pubJwk,  { name: 'ECDH', namedCurve: 'P-256' }, true,  []),
+      crypto.subtle.importKey('jwk', privJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']),
+    ]);
+    return { publicKey, privateKey };
+  } catch {
+    return null;
+  }
 }
 
 /** Export the public key as a JWK string suitable for the server. */

@@ -195,6 +195,15 @@ export const api = {
   /** Upload this client's ECDH public key so peers can derive DM keys.
    *  `password` is required when overwriting an existing key (CRYPTO-005).
    *  Initial registration (no key yet) does not require a password. */
+  getDmKeyBackup: () =>
+    request<{ backup: string | null }>('/api/auth/me/dm-key-backup'),
+
+  putDmKeyBackup: (backup: string) =>
+    request<{ ok: boolean }>('/api/auth/me/dm-key-backup', {
+      method: 'PUT',
+      body: JSON.stringify({ backup }),
+    }),
+
   registerPublicKey: (jwkString: string, password?: string) =>
     request<{ ok: boolean }>('/api/auth/me/public-key', {
       method: 'PUT',

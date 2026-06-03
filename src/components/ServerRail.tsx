@@ -12,7 +12,7 @@ type Props = {
   onLogout: () => void;
   onOpenProfile: () => void;
   onViewProfile: () => void;
-  onSwitchServer?: () => void;
+
   me: { id: string; displayName: string; username: string; avatarUrl?: string | null };
   unreadByServer: Record<string, number>;
   connectionState: 'connected' | 'connecting' | 'disconnected';
@@ -44,7 +44,7 @@ export function ServerRail({
   onLogout,
   onOpenProfile,
   onViewProfile,
-  onSwitchServer,
+
   me,
   unreadByServer,
   connectionState,
@@ -299,13 +299,6 @@ export function ServerRail({
                 icon={<UserIcon />}
                 label="Account settings"
               />
-              {onSwitchServer && (
-                <MenuItem
-                  onClick={() => { setMenuOpen(false); onSwitchServer(); }}
-                  icon={<SwitchIcon />}
-                  label="Switch Recline instance"
-                />
-              )}
               <div className="my-1 mx-2 border-t border-white/[0.06]" />
               <MenuItem
                 onClick={() => { setMenuOpen(false); onLogout(); }}
@@ -363,15 +356,6 @@ function UserIcon() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
       <circle cx="12" cy="7" r="4" />
-    </svg>
-  );
-}
-
-function SwitchIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5" />
-      <path d="M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5" />
     </svg>
   );
 }

@@ -18,6 +18,7 @@ type Props = {
   me: User;
   onUpdated: (user: User) => void;
   onRotateKey: (password: string) => Promise<void>;
+  onSyncKey: (password: string) => Promise<void>;
   isSupporter?: boolean;
   sparksBalance?: number;
   onSparksUpdate?: (balance: number) => void;
@@ -765,12 +766,14 @@ function SecurityTab({
   me,
   onUpdated,
   onRotateKey,
+  onSyncKey,
 }: {
   me: User;
   onUpdated: (user: User) => void;
   onRotateKey: (password: string) => Promise<void>;
+  onSyncKey: (password: string) => Promise<void>;
 }) {
-  type Panel = 'idle' | 'totp-setup' | 'totp-disable' | 'regen-codes' | 'rotate-key';
+  type Panel = 'idle' | 'totp-setup' | 'totp-disable' | 'regen-codes' | 'rotate-key' | 'sync-key';
   const [panel, setPanel] = useState<Panel>('idle');
 
   const totpEnabled = me.totpEnabled ?? false;
@@ -823,6 +826,10 @@ function SecurityTab({
         />
       </div>
     );
+  }
+
+  if (panel === 'sync-key') {
+    return <SyncKeyPanel onDone={() => setPanel('idle')} onCancel={() => setPanel('idle')} onSync={onSyncKey} />;
   }
 
   return (
@@ -915,13 +922,88 @@ function SecurityTab({
             </div>
           </div>
         </div>
-        <button
-          onClick={() => setPanel('rotate-key')}
-          className="w-full text-xs text-ink-300 hover:text-ink-100 border border-white/10 hover:border-white/20 rounded-xl py-2 transition-colors"
-        >
-          Rotate encryption key
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setPanel('rotate-key')}
+            className="flex-1 text-xs text-ink-300 hover:text-ink-100 border border-white/10 hover:border-white/20 rounded-xl py-2 transition-colors"
+          >
+            Rotate key
+          </button>
+          <button
+            onClick={() => setPanel('sync-key')}
+            className="flex-1 text-xs text-blue-400/80 hover:text-blue-300 border border-blue-500/20 hover:border-blue-500/40 rounded-xl py-2 transition-colors"
+          >
+            Sync from account
+          </button>
+        </div>
       </SectionCard>
+    </div>
+  );
+}
+
+// ── SyncKeyPanel ──────────────────────────────────────────────────────────────
+function SyncKeyPanel({
+  onDone,
+  onCancel,
+  onSync,
+}: {
+  onDone: () => void;
+  onCancel: () => void;
+  onSync: (password: string) => Promise<void>;
+}) {
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function handleSync() {
+    if (!password) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await onSync(password);
+      setDone(true);
+      setTimeout(onDone, 1200);
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to sync key');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (done) {
+    return (
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-ink-100">Sync encryption key</h3>
+        <p className="text-[12px] text-emerald-400">Key synced successfully — your messages will now decrypt correctly on this device.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold text-ink-100">Sync encryption key</h3>
+      <p className="text-[12px] text-ink-300/80">
+        Downloads your encryption key backup from the server and imports it on this device.
+        Use this if messages won't decrypt after logging in on a new device.
+        Your account password is used to decrypt the backup locally.
+      </p>
+      <input
+        type="password"
+        className="input w-full"
+        placeholder="Account password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && handleSync()}
+        autoFocus
+      />
+      {error && <p className="text-xs text-rose-400">{error}</p>}
+      <div className="flex gap-2">
+        <button onClick={onCancel} className="btn-ghost flex-1 !py-2 text-xs">Cancel</button>
+        <button onClick={handleSync} disabled={loading || !password} className="btn-primary flex-1 !py-2 text-xs">
+          {loading ? 'Syncing…' : 'Sync key'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -1312,7 +1394,7 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
 }
 
 // ── Shell ─────────────────────────────────────────────────────────────────────
-export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, isSupporter, sparksBalance, onSparksUpdate, initialTab }: Props) {
+export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, onSyncKey, isSupporter, sparksBalance, onSparksUpdate, initialTab }: Props) {
   const [tab, setTab] = useState<Tab>('profile');
 
   useEffect(() => {
@@ -1348,7 +1430,7 @@ export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, isSup
         <SparksTab balance={sparksBalance ?? 0} onSparksUpdate={onSparksUpdate} />
       )}
       {tab === 'security' && (
-        <SecurityTab me={me} onUpdated={onUpdated} onRotateKey={onRotateKey} />
+        <SecurityTab me={me} onUpdated={onUpdated} onRotateKey={onRotateKey} onSyncKey={onSyncKey} />
       )}
       {tab === 'notifications' && (
         <NotificationsTab />
