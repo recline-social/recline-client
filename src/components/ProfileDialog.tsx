@@ -1243,7 +1243,7 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
         <div className="rounded-2xl overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
           <div className="px-4 pt-3 pb-2 border-b" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
             <div className="text-[13px] font-semibold text-ink-100">Cash out Sparks</div>
-            <div className="text-[11px] text-ink-400 mt-0.5">1 000 Sparks = $12 · transferred via Stripe</div>
+            <div className="text-[11px] text-ink-400 mt-0.5">1 000 Sparks = $8 · transferred via Stripe</div>
           </div>
           <div className="px-4 py-3 space-y-2">
             {connectReady ? (
@@ -1266,7 +1266,7 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
                     className="btn-primary !py-1.5 !px-3 text-[12px] font-bold disabled:opacity-50"
                     style={{ background: 'rgba(16,185,129,0.2)', border: '1px solid rgba(16,185,129,0.35)', color: '#34d399' }}
                   >
-                    {cashouting ? 'Sending…' : `Cash out $${cashoutAmount ? (parseInt(cashoutAmount, 10) * 1.2 / 100).toFixed(2) : '0'}`}
+                    {cashouting ? 'Sending…' : `Cash out $${cashoutAmount ? (parseInt(cashoutAmount, 10) * 0.8 / 100).toFixed(2) : '0'}`}
                   </button>
                 </div>
                 {cashoutMsg && <p className="text-[12px] text-emerald-400 font-medium">{cashoutMsg}</p>}
