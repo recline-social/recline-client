@@ -15,6 +15,7 @@ import { ServerSettingsDialog } from './components/ServerSettingsDialog';
 import { DmList } from './components/DmList';
 import { DmView } from './components/DmView';
 import { DmCallIncoming } from './components/DmCallIncoming';
+import { DmCallWindow } from './components/DmCallWindow';
 import type { DmCallState } from './types';
 import { ServerHome } from './components/ServerHome';
 import { ServerSetup } from './components/ServerSetup';
@@ -1085,9 +1086,12 @@ export default function App() {
       if (!call || call.dmChannelId !== data.dmChannelId) return;
 
       if (call.status === 'outgoing-ringing') {
-        // Caller path: create PC with ICE servers, send offer
+        // Caller path: create PC with ICE servers, send offer.
+        // offerToReceiveVideo is always true so the SDP always includes a video
+        // m-line — even if the caller has audio-only, the callee may have enabled
+        // their camera and needs somewhere to send it.
         const pc = buildDmPeerConnection(data.iceServers, data.dmChannelId, call.localStream);
-        pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: call.hasVideo })
+        pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true })
           .then((offer) => pc.setLocalDescription(offer))
           .then(() => { s.emit('dm:call:offer', { dmChannelId: data.dmChannelId, sdp: pc.localDescription! }); })
           .catch(console.error);
@@ -2068,9 +2072,14 @@ export default function App() {
     // which delivers ICE servers from the server. The onDmCallAccepted handler
     // (below) creates the PC with proper ICE servers for BOTH caller and callee.
     // Store localStream and pending state; PC is created on dm:call:accepted.
-    setDmCall((prev) => prev ? {
-      ...prev, status: 'connecting', hasVideo: withVideo, localStream, pc: null,
-    } : prev);
+    //
+    // STALE-STREAM FIX: update dmCallRef.current synchronously HERE so that when
+    // onDmCallAccepted fires (potentially before the React re-render), it sees the
+    // correct localStream. Without this the callee's video tracks are never added
+    // to the PeerConnection because localStream is still null in the ref.
+    const nextCallState = { ...call, status: 'connecting' as const, hasVideo: withVideo, localStream, pc: null };
+    dmCallRef.current = nextCallState;
+    setDmCall(nextCallState);
     playCallSound('join_call');
     socketRef.current?.emit('dm:call:accept', { dmChannelId: call.dmChannelId });
   }
@@ -2416,9 +2425,6 @@ export default function App() {
               isTyping={!!dmTyping[activeDm.id]}
               call={dmCall?.dmChannelId === activeDm.id ? dmCall : null}
               onCallStart={(hasVideo) => startDmCall(activeDm.id, hasVideo)}
-              onCallHangUp={hangUpDmCall}
-              onCallMute={toggleDmMute}
-              onCallToggleVideo={toggleDmVideo}
               hasMore={dmHasMore[activeDm.id] ?? false}
               onLoadMore={() => loadMoreDmMessages(activeDm.id)}
               onOpenSidebar={() => setMobileSidebarOpen(true)}
@@ -2696,6 +2702,19 @@ export default function App() {
           hasVideo={dmCall.hasVideo}
           onAccept={(withVideo) => acceptDmCall(withVideo)}
           onDecline={rejectDmCall}
+        />
+      )}
+
+      {/* DM call window — floating, draggable, shown for all active call states */}
+      {dmCall && dmCall.status !== 'incoming-ringing' && (
+        <DmCallWindow
+          call={dmCall}
+          myName={user.displayName}
+          myAvatarUrl={user.avatarUrl ?? null}
+          myId={user.id}
+          onMute={toggleDmMute}
+          onToggleVideo={toggleDmVideo}
+          onHangUp={hangUpDmCall}
         />
       )}
 

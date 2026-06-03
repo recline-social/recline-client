@@ -271,12 +271,9 @@ type Props = {
   onReact: (dmMessageId: string, emoji: string) => void;
   onTyping: () => void;
   isTyping: boolean; // is the other person typing?
-  /** Active DM call state — null if no call in progress */
+  /** Active DM call state — null if no call in progress. Used only to hide the call-start buttons. */
   call: DmCallState | null;
   onCallStart: (hasVideo: boolean) => void;
-  onCallHangUp: () => void;
-  onCallMute: () => void;
-  onCallToggleVideo: () => void;
   hasMore?: boolean;
   onLoadMore?: () => Promise<void>;
   onOpenSidebar?: () => void;
@@ -285,7 +282,7 @@ type Props = {
 
 export function DmView({
   dm, messages, me, online, onSend, onDelete, onClearChat, onReact, onTyping, isTyping,
-  call, onCallStart, onCallHangUp, onCallMute, onCallToggleVideo,
+  call, onCallStart,
   hasMore = false, onLoadMore, onOpenSidebar, onClickUser,
 }: Props) {
   const [text, setText] = useState('');
@@ -294,7 +291,6 @@ export function DmView({
   const [loadingMore, setLoadingMore] = useState(false);
   const [clearConfirm, setClearConfirm] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
-  const [showVideo, setShowVideo] = useState(false);
   // File attachment state
   const [attachedFile, setAttachedFile] = useState<{ fileUrl: string; fileName: string; fileSize: number; fileType: string } | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -484,16 +480,14 @@ export function DmView({
         </div>
       </div>
 
-      {/* ── Active/outgoing call bar ─────────────────────────────────────── */}
+      {/* Call active indicator — the full DmCallWindow is rendered at App.tsx level */}
       {call && call.status !== 'incoming-ringing' && (
-        <DmCallBar
-          call={call}
-          onMute={onCallMute}
-          onToggleVideo={onCallToggleVideo}
-          onHangUp={onCallHangUp}
-          onToggleVideoView={() => setShowVideo((v) => !v)}
-          showVideo={showVideo}
-        />
+        <div className="px-3 md:px-4 py-1.5 bg-emerald-500/[0.06] border-b border-emerald-500/15 flex items-center gap-2 shrink-0">
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${call.status === 'active' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+          <span className="text-[11px] text-emerald-400/80">
+            {call.status === 'outgoing-ringing' ? `Calling ${call.peerName}…` : call.status === 'connecting' ? 'Connecting…' : `In call · ${call.peerName}`}
+          </span>
+        </div>
       )}
 
       {/* ── Messages ─────────────────────────────────────────────────────── */}
@@ -701,13 +695,7 @@ export function DmView({
         )}
       </form>
 
-      {/* Peer audio stream (always mounted when call is active) */}
-      {hasActiveCall && <DmCallAudio stream={call!.peerStream} />}
-
-      {/* Video overlay */}
-      {hasActiveCall && showVideo && call!.hasVideo && (
-        <DmVideoOverlay call={call!} onClose={() => setShowVideo(false)} />
-      )}
+      {/* Audio + video are now handled by DmCallWindow rendered at App.tsx level */}
     </div>
   );
 }
