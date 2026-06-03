@@ -116,16 +116,22 @@ export function ServerRail({
   return (
     <aside className="h-full w-[62px] flex flex-col items-center py-3 gap-1.5 bg-ink-950 border-r border-white/[0.09]">
 
-      {/* Recline logo */}
-      <div
-        className="h-10 w-10 grid place-items-center rounded-2xl mb-1 shrink-0 bg-accent-violet shadow-glow ring-1 ring-white/10"
-        title="Recline"
+      {/* Recline home button — navigates to DM / home view */}
+      <button
+        onClick={() => onViewChange('dm')}
+        className={`h-10 w-10 grid place-items-center rounded-2xl mb-1 shrink-0 ring-1 transition-all duration-150 shadow-glow
+          ${view === 'dm'
+            ? 'bg-accent-violet ring-white/20 scale-105'
+            : 'bg-accent-violet/80 ring-white/10 hover:bg-accent-violet hover:ring-white/20 hover:scale-105'
+          }`}
+        title="Home"
+        aria-label="Go to home / direct messages"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
           <rect x="3" y="11" width="18" height="11" rx="2" />
           <path d="M7 11V7a5 5 0 0 1 10 0v4" />
         </svg>
-      </div>
+      </button>
 
       <div className="h-px w-8 bg-white/[0.07] shrink-0" />
 

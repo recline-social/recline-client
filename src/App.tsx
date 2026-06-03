@@ -14,6 +14,8 @@ import { InviteJoinModal } from './components/InviteJoinModal';
 import { ServerSettingsDialog } from './components/ServerSettingsDialog';
 import { DmList } from './components/DmList';
 import { DmView } from './components/DmView';
+import { DmCallIncoming } from './components/DmCallIncoming';
+import type { DmCallState } from './types';
 import { ServerHome } from './components/ServerHome';
 import { ServerSetup } from './components/ServerSetup';
 import { isDesktop, getServerUrl, setServerUrl } from './lib/serverUrl';
@@ -314,6 +316,13 @@ export default function App() {
   const [dmMsgLoaded, setDmMsgLoaded] = useState<Record<string, boolean>>({});
   const [dmHasMore, setDmHasMore] = useState<Record<string, boolean>>({});
   const [dmUnreadMap, setDmUnreadMap] = useState<Record<string, number>>({});
+  // DM calls
+  const [dmCall, setDmCall] = useState<DmCallState | null>(null);
+  const dmCallRef = useRef<DmCallState | null>(null);
+  dmCallRef.current = dmCall;
+  // DM typing: dmChannelId → true if other person is currently typing
+  const [dmTyping, setDmTyping] = useState<Record<string, boolean>>({});
+  const dmTypingTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   // friends list
   const [friends, setFriends] = useState<Friend[]>([]);
@@ -1010,6 +1019,135 @@ export default function App() {
     s.on('dm:message:deleted', onDmMessageDeleted);
     s.on('dm:cleared', onDmCleared);
     s.on('reaction:update', onReactionUpdate);
+
+    // ── DM typing ──────────────────────────────────────────────────────────
+    const onDmTypingStart = (data: { dmChannelId: string; userId: string }) => {
+      if (data.userId === user.id) return;
+      setDmTyping((prev) => ({ ...prev, [data.dmChannelId]: true }));
+      // Auto-clear after 4s in case stop event is missed
+      if (dmTypingTimers.current[data.dmChannelId]) clearTimeout(dmTypingTimers.current[data.dmChannelId]);
+      dmTypingTimers.current[data.dmChannelId] = setTimeout(() => {
+        setDmTyping((prev) => { const n = { ...prev }; delete n[data.dmChannelId]; return n; });
+      }, 4000);
+    };
+    const onDmTypingStop = (data: { dmChannelId: string; userId: string }) => {
+      if (data.userId === user.id) return;
+      if (dmTypingTimers.current[data.dmChannelId]) clearTimeout(dmTypingTimers.current[data.dmChannelId]);
+      setDmTyping((prev) => { const n = { ...prev }; delete n[data.dmChannelId]; return n; });
+    };
+    s.on('dm:typing:start', onDmTypingStart);
+    s.on('dm:typing:stop', onDmTypingStop);
+
+    // ── DM reactions ───────────────────────────────────────────────────────
+    const onDmReactionUpdate = (data: {
+      dmMessageId: string; dmChannelId: string;
+      emoji: string; userId: string; action: 'add' | 'remove';
+      counts: { emoji: string; count: number; userIds: string[] }[];
+    }) => {
+      setDmMessages((prev) => {
+        const msgs = prev[data.dmChannelId];
+        if (!msgs) return prev;
+        return {
+          ...prev,
+          [data.dmChannelId]: msgs.map((m) =>
+            m.id === data.dmMessageId ? { ...m, reactions: data.counts } : m
+          ),
+        };
+      });
+    };
+    s.on('dm:reaction:update', onDmReactionUpdate);
+
+    // ── DM call signaling ──────────────────────────────────────────────────
+    const onDmCallIncoming = (data: { dmChannelId: string; callerUserId: string; callerName: string; callerAvatarUrl: string | null; hasVideo: boolean }) => {
+      // Don't overwrite an already-active call
+      if (dmCallRef.current) return;
+      setDmCall({
+        dmChannelId: data.dmChannelId,
+        peerUserId: data.callerUserId,
+        peerName: data.callerName,
+        peerAvatarUrl: data.callerAvatarUrl,
+        status: 'incoming-ringing',
+        hasVideo: data.hasVideo,
+        isMuted: false,
+        isVideoOff: false,
+        localStream: null,
+        peerStream: null,
+        pc: null,
+        startedAt: null,
+      });
+    };
+
+    const onDmCallAccepted = (data: { dmChannelId: string; iceServers: RTCIceServer[] }) => {
+      const call = dmCallRef.current;
+      if (!call || call.dmChannelId !== data.dmChannelId) return;
+      if (call.status !== 'outgoing-ringing') return;
+      // Caller side: create PC and send offer
+      const pc = new RTCPeerConnection({ iceServers: data.iceServers });
+      if (call.localStream) {
+        for (const track of call.localStream.getTracks()) pc.addTrack(track, call.localStream);
+      }
+      pc.onicecandidate = ({ candidate }) => {
+        if (candidate) s.emit('dm:call:ice', { dmChannelId: data.dmChannelId, candidate: candidate.toJSON() });
+      };
+      pc.ontrack = ({ streams }) => {
+        const stream = streams[0];
+        if (stream) setDmCall((prev) => prev ? { ...prev, peerStream: stream } : prev);
+      };
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+          setDmCall((prev) => prev ? { ...prev, status: 'active', startedAt: Date.now() } : prev);
+        }
+        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+          teardownDmCall();
+        }
+      };
+      pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: call.hasVideo })
+        .then((offer) => pc.setLocalDescription(offer))
+        .then(() => {
+          s.emit('dm:call:offer', { dmChannelId: data.dmChannelId, sdp: pc.localDescription! });
+        })
+        .catch(console.error);
+      setDmCall((prev) => prev ? { ...prev, status: 'connecting', pc } : prev);
+    };
+
+    const onDmCallRejected = (data: { dmChannelId: string }) => {
+      if (dmCallRef.current?.dmChannelId === data.dmChannelId) teardownDmCall();
+    };
+
+    const onDmCallEnded = (data: { dmChannelId: string }) => {
+      if (dmCallRef.current?.dmChannelId === data.dmChannelId) teardownDmCall();
+    };
+
+    const onDmCallOffer = async (data: { dmChannelId: string; sdp: RTCSessionDescriptionInit }) => {
+      const call = dmCallRef.current;
+      if (!call || call.dmChannelId !== data.dmChannelId) return;
+      if (call.status !== 'connecting' || !call.pc) return;
+      const pc = call.pc;
+      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      s.emit('dm:call:answer', { dmChannelId: data.dmChannelId, sdp: pc.localDescription! });
+    };
+
+    const onDmCallAnswer = async (data: { dmChannelId: string; sdp: RTCSessionDescriptionInit }) => {
+      const call = dmCallRef.current;
+      if (!call || call.dmChannelId !== data.dmChannelId || !call.pc) return;
+      await call.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    };
+
+    const onDmCallIce = async (data: { dmChannelId: string; candidate: RTCIceCandidateInit }) => {
+      const call = dmCallRef.current;
+      if (!call || call.dmChannelId !== data.dmChannelId || !call.pc) return;
+      try { await call.pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch {}
+    };
+
+    s.on('dm:call:incoming', onDmCallIncoming);
+    s.on('dm:call:accepted', onDmCallAccepted);
+    s.on('dm:call:rejected', onDmCallRejected);
+    s.on('dm:call:ended', onDmCallEnded);
+    s.on('dm:call:offer', onDmCallOffer);
+    s.on('dm:call:answer', onDmCallAnswer);
+    s.on('dm:call:ice', onDmCallIce);
     s.on('message:edited', onMessageEdited);
     s.on('channel:deleted', onChannelDeleted);
     s.on('channel:updated', onChannelUpdated);
@@ -1095,6 +1233,16 @@ export default function App() {
       s.off('dm:message:deleted', onDmMessageDeleted);
       s.off('dm:cleared', onDmCleared);
       s.off('reaction:update', onReactionUpdate);
+      s.off('dm:typing:start', onDmTypingStart);
+      s.off('dm:typing:stop', onDmTypingStop);
+      s.off('dm:reaction:update', onDmReactionUpdate);
+      s.off('dm:call:incoming', onDmCallIncoming);
+      s.off('dm:call:accepted', onDmCallAccepted);
+      s.off('dm:call:rejected', onDmCallRejected);
+      s.off('dm:call:ended', onDmCallEnded);
+      s.off('dm:call:offer', onDmCallOffer);
+      s.off('dm:call:answer', onDmCallAnswer);
+      s.off('dm:call:ice', onDmCallIce);
       s.off('message:edited', onMessageEdited);
       s.off('channel:deleted', onChannelDeleted);
       s.off('channel:updated', onChannelUpdated);
@@ -1863,16 +2011,153 @@ export default function App() {
     setDmHasMore((prev) => ({ ...prev, [dmId]: messages.length === MSG_PAGE }));
   }
 
-  async function sendDmMessage(dmId: string, text: string) {
+  // ── DM Call management ────────────────────────────────────────────────────
+
+  function teardownDmCall() {
+    setDmCall((prev) => {
+      if (!prev) return null;
+      prev.pc?.close();
+      prev.localStream?.getTracks().forEach((t) => t.stop());
+      return null;
+    });
+    playCallSound('leave_call');
+  }
+
+  async function startDmCall(dmId: string, hasVideo: boolean) {
+    if (dmCall) return; // already in a call
+    const dm = dms.find((d) => d.id === dmId);
+    if (!dm) return;
+    let localStream: MediaStream | null = null;
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: { sampleRate: 48000, channelCount: { ideal: 2, min: 1 }, echoCancellation: true, noiseSuppression: true },
+        video: hasVideo ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+      });
+    } catch (err) {
+      console.error('[DM call] getUserMedia failed:', err);
+      return;
+    }
+    setDmCall({
+      dmChannelId: dmId,
+      peerUserId: dm.otherUserId,
+      peerName: dm.otherDisplayName,
+      peerAvatarUrl: dm.otherAvatarUrl ?? null,
+      status: 'outgoing-ringing',
+      hasVideo,
+      isMuted: false,
+      isVideoOff: false,
+      localStream,
+      peerStream: null,
+      pc: null,
+      startedAt: null,
+    });
+    playCallSound('join_call');
+    socketRef.current?.emit('dm:call:invite', { dmChannelId: dmId, hasVideo });
+    // Auto-cancel after 45s if no answer
+    setTimeout(() => {
+      if (dmCallRef.current?.dmChannelId === dmId && dmCallRef.current?.status === 'outgoing-ringing') {
+        socketRef.current?.emit('dm:call:end', { dmChannelId: dmId });
+        teardownDmCall();
+      }
+    }, 45_000);
+  }
+
+  async function acceptDmCall(withVideo: boolean) {
+    const call = dmCallRef.current;
+    if (!call || call.status !== 'incoming-ringing') return;
+    let localStream: MediaStream | null = null;
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: { sampleRate: 48000, channelCount: { ideal: 2, min: 1 }, echoCancellation: true, noiseSuppression: true },
+        video: withVideo ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+      });
+    } catch (err) {
+      console.error('[DM call] getUserMedia failed:', err);
+      return;
+    }
+    // Create the RTCPeerConnection now — caller will send ICE servers in dm:call:accepted
+    // We build PC after receiving iceServers from the server via dm:call:accepted
+    // For now, get ICE servers by emitting accept — server sends dm:call:accepted back to both
+    const pc = new RTCPeerConnection(); // will be replaced with proper iceServers
+    for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) socketRef.current?.emit('dm:call:ice', { dmChannelId: call.dmChannelId, candidate: candidate.toJSON() });
+    };
+    pc.ontrack = ({ streams }) => {
+      const stream = streams[0];
+      if (stream) setDmCall((prev) => prev ? { ...prev, peerStream: stream } : prev);
+    };
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        setDmCall((prev) => prev ? { ...prev, status: 'active', startedAt: Date.now() } : prev);
+      }
+      if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+        teardownDmCall();
+      }
+    };
+    setDmCall((prev) => prev ? {
+      ...prev, status: 'connecting', hasVideo: withVideo, localStream, pc,
+    } : prev);
+    playCallSound('join_call');
+    socketRef.current?.emit('dm:call:accept', { dmChannelId: call.dmChannelId });
+  }
+
+  function rejectDmCall() {
+    const call = dmCallRef.current;
+    if (!call) return;
+    socketRef.current?.emit('dm:call:reject', { dmChannelId: call.dmChannelId });
+    teardownDmCall();
+  }
+
+  function hangUpDmCall() {
+    const call = dmCallRef.current;
+    if (!call) return;
+    socketRef.current?.emit('dm:call:end', { dmChannelId: call.dmChannelId });
+    teardownDmCall();
+  }
+
+  function toggleDmMute() {
+    const call = dmCallRef.current;
+    if (!call?.localStream) return;
+    const newMuted = !call.isMuted;
+    call.localStream.getAudioTracks().forEach((t) => { t.enabled = !newMuted; });
+    setDmCall((prev) => prev ? { ...prev, isMuted: newMuted } : prev);
+    playCallSound(newMuted ? 'mute' : 'unmute');
+  }
+
+  function toggleDmVideo() {
+    const call = dmCallRef.current;
+    if (!call?.localStream) return;
+    const newOff = !call.isVideoOff;
+    call.localStream.getVideoTracks().forEach((t) => { t.enabled = !newOff; });
+    setDmCall((prev) => prev ? { ...prev, isVideoOff: newOff } : prev);
+  }
+
+  function handleDmReact(dmMessageId: string, dmChannelId: string, emoji: string) {
+    socketRef.current?.emit('dm:reaction:toggle', { dmMessageId, dmChannelId, emoji });
+  }
+
+  function handleDmTyping(dmChannelId: string) {
+    socketRef.current?.emit('dm:typing:start', dmChannelId);
+  }
+
+  async function sendDmMessage(dmId: string, text: string, file?: { fileUrl: string; fileName: string; fileSize: number; fileType: string }) {
     const dmChannel = dmsRef.current.find((d) => d.id === dmId);
     const key = dmChannel ? await getDmKey(dmChannel) : null;
-    if (key) {
-      const { ciphertext, nonce } = await encryptText(key, text);
-      await api.sendDmMessage(dmId, { ciphertext, nonce });
-    } else {
-      // Fallback: legacy plaintext (peer hasn't registered an ECDH key yet)
-      await api.sendDmMessage(dmId, { body: text });
+    const fileFields = file ? { fileUrl: file.fileUrl, fileName: file.fileName, fileSize: file.fileSize, fileType: file.fileType } : {};
+    if (text.trim()) {
+      if (key) {
+        const { ciphertext, nonce } = await encryptText(key, text);
+        await api.sendDmMessage(dmId, { ciphertext, nonce, ...fileFields });
+      } else {
+        await api.sendDmMessage(dmId, { body: text, ...fileFields });
+      }
+    } else if (file) {
+      // File-only message — no text body
+      await api.sendDmMessage(dmId, fileFields as any);
     }
+    // Stop typing indicator when message is sent
+    socketRef.current?.emit('dm:typing:stop', dmId);
   }
 
   async function deleteDmMessage(dmId: string, msgId: string) {
@@ -2129,9 +2414,17 @@ export default function App() {
               messages={dmMessages[activeDm.id] ?? []}
               me={user}
               online={online}
-              onSend={(text) => sendDmMessage(activeDm.id, text)}
+              onSend={(text, file) => sendDmMessage(activeDm.id, text, file)}
               onDelete={(msgId) => deleteDmMessage(activeDm.id, msgId)}
               onClearChat={() => clearDmChat(activeDm.id)}
+              onReact={(dmMessageId, emoji) => handleDmReact(dmMessageId, activeDm.id, emoji)}
+              onTyping={() => handleDmTyping(activeDm.id)}
+              isTyping={!!dmTyping[activeDm.id]}
+              call={dmCall?.dmChannelId === activeDm.id ? dmCall : null}
+              onCallStart={(hasVideo) => startDmCall(activeDm.id, hasVideo)}
+              onCallHangUp={hangUpDmCall}
+              onCallMute={toggleDmMute}
+              onCallToggleVideo={toggleDmVideo}
               hasMore={dmHasMore[activeDm.id] ?? false}
               onLoadMore={() => loadMoreDmMessages(activeDm.id)}
               onOpenSidebar={() => setMobileSidebarOpen(true)}
@@ -2398,6 +2691,19 @@ export default function App() {
         />
       )}
       <FeedbackButton />
+
+      {/* DM incoming call modal — shown on top of everything */}
+      {dmCall?.status === 'incoming-ringing' && (
+        <DmCallIncoming
+          callerUserId={dmCall.peerUserId}
+          callerName={dmCall.peerName}
+          callerAvatarUrl={dmCall.peerAvatarUrl}
+          hasVideo={dmCall.hasVideo}
+          onAccept={(withVideo) => acceptDmCall(withVideo)}
+          onDecline={rejectDmCall}
+        />
+      )}
+
       {/* Broadcast overlay — shown sequentially when server broadcasts arrive */}
       <BroadcastOverlay
         queue={broadcastQueue}

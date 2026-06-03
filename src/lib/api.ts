@@ -327,8 +327,13 @@ export const api = {
     return request<{ messages: DmMessagePayload[] }>(`/api/dms/${dmId}/messages?${params}`);
   },
 
-  /** Send an E2E encrypted DM message (primary path). */
-  sendDmMessage: (dmId: string, payload: { ciphertext: string; nonce: string } | { body: string }) =>
+  /** Send an E2E encrypted DM message. Optional file attachment fields can be included. */
+  sendDmMessage: (
+    dmId: string,
+    payload: ({ ciphertext: string; nonce: string } | { body: string } | Record<string, unknown>) & {
+      fileUrl?: string; fileName?: string; fileSize?: number; fileType?: string;
+    },
+  ) =>
     request<{ message: DmMessagePayload }>(`/api/dms/${dmId}/messages`, {
       method: 'POST',
       body: JSON.stringify(payload),

@@ -180,6 +180,11 @@ export type DmWireMessage = {
    */
   senderEcdhPublicKey?: string | null;
   createdAt: number;
+  /** File attachment fields — not E2E encrypted (same limitation as channel attachments). */
+  fileUrl?: string | null;
+  fileName?: string | null;
+  fileSize?: number | null;
+  fileType?: string | null;
 };
 
 /** Decoded/displayable DM message — body is always a string after decrypt/fallback. */
@@ -188,6 +193,36 @@ export type DmMessage = DmWireMessage & {
   body: string;
   /** True if decryption failed or key was missing. */
   failed?: boolean;
+  /** Emoji reactions on this message. */
+  reactions?: DmReaction[];
+};
+
+export type DmReaction = {
+  emoji: string;
+  count: number;
+  userIds: string[];
+};
+
+// ── DM call types ─────────────────────────────────────────────────────────────
+export type DmCallStatus =
+  | 'outgoing-ringing'  // we initiated, waiting for peer to pick up
+  | 'incoming-ringing'  // peer initiated, showing incoming call modal
+  | 'connecting'        // accepted, WebRTC negotiation in progress
+  | 'active';           // call fully connected
+
+export type DmCallState = {
+  dmChannelId: string;
+  peerUserId: string;
+  peerName: string;
+  peerAvatarUrl: string | null;
+  status: DmCallStatus;
+  hasVideo: boolean;
+  isMuted: boolean;
+  isVideoOff: boolean;
+  localStream: MediaStream | null;
+  peerStream: MediaStream | null;
+  pc: RTCPeerConnection | null;
+  startedAt: number | null;  // unix ms when status hit 'active'
 };
 
 export type FriendStatus = 'pending' | 'accepted';
