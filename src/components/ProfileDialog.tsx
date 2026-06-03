@@ -930,6 +930,43 @@ function SecurityTab({
 const DAILY_REWARDS = [0, 5, 8, 12, 16, 20, 25, 50];
 const DAY_LABELS    = ['', 'Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Day 6', 'Day 7'];
 
+/**
+ * Turn raw sparks_transactions reason strings into human-readable labels.
+ * Reason format examples:
+ *   daily_claim:3            → "Daily login · Day 3"
+ *   broadcast:text:serverId  → "Broadcast · Text"
+ *   broadcast:image:…        → "Broadcast · Image"
+ *   broadcast_pending:text:… → "Broadcast (pending) · Text"
+ *   broadcast_revenue:bcId   → "Broadcast revenue"
+ *   broadcast_refund:bcId    → "Broadcast refund"
+ *   message_spark:msgId      → "Spark sent"
+ *   message_spark_received:… → "Spark received"
+ *   sparks_purchase:…        → "Sparks purchase"
+ *   cashout:…                → "Cashout"
+ */
+function formatTxReason(reason: string): string {
+  if (reason.startsWith('daily_claim:')) {
+    const day = reason.split(':')[1];
+    return day ? `Daily login · Day ${day}` : 'Daily login';
+  }
+  if (reason.startsWith('broadcast_pending:')) {
+    const type = reason.split(':')[1] ?? '';
+    return `Broadcast queued · ${type.charAt(0).toUpperCase() + type.slice(1)}`;
+  }
+  if (reason.startsWith('broadcast_revenue:')) return 'Broadcast revenue';
+  if (reason.startsWith('broadcast_refund:'))  return 'Broadcast refund';
+  if (reason.startsWith('broadcast:')) {
+    const type = reason.split(':')[1] ?? '';
+    return `Broadcast · ${type.charAt(0).toUpperCase() + type.slice(1)}`;
+  }
+  if (reason.startsWith('message_spark_received:')) return 'Spark received';
+  if (reason.startsWith('message_spark:'))          return 'Spark sent';
+  if (reason.startsWith('sparks_purchase:'))        return 'Sparks purchase';
+  if (reason.startsWith('cashout:'))                return 'Cashout';
+  // Fallback: replace underscores/colons with spaces and title-case
+  return reason.replace(/[_:]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdate?: (b: number) => void }) {
   const [streak, setStreak]     = useState(0);
   const [claimed, setClaimed]   = useState(false);
@@ -954,7 +991,7 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
 
   useEffect(() => {
     let live = true;
-    Promise.all([api.sparks.streak(), api.sparks.transactions(10), api.sparks.packs(), api.connect.status()])
+    Promise.all([api.sparks.streak(), api.sparks.transactions(25), api.sparks.packs(), api.connect.status()])
       .then(([s, t, p, c]) => {
         if (!live) return;
         setStreak(s.currentStreak);
@@ -1023,7 +1060,7 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
         setClaimMsg({ reward: r.reward, day: r.newStreak });
         onSparksUpdate?.(balance + r.reward);
         // Refresh transactions
-        api.sparks.transactions(10).then((t) => setTxns(t.transactions ?? [])).catch(() => {});
+        api.sparks.transactions(25).then((t) => setTxns(t.transactions ?? [])).catch(() => {});
         setTimeout(() => setClaimMsg(null), 4000);
       }
     } catch { /* silent */ } finally {
@@ -1261,7 +1298,7 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
           <div className="flex flex-col gap-1">
             {txns.map((tx, i) => (
               <div key={i} className="flex items-center justify-between py-1.5 px-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)' }}>
-                <span className="text-[12px] text-ink-300 capitalize">{tx.reason.replace(/_/g, ' ')}</span>
+                <span className="text-[12px] text-ink-300">{formatTxReason(tx.reason)}</span>
                 <span className={`text-[12px] font-semibold ${tx.delta > 0 ? 'text-amber-400' : 'text-rose-400'}`}>
                   {tx.delta > 0 ? '+' : ''}{tx.delta} ✦
                 </span>
