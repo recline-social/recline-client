@@ -10,13 +10,17 @@ const TYPES = [
   { id: 'takeover', label: 'Takeover', cost: 150, icon: '⚡', desc: 'Full-screen flash with text + media' },
 ];
 
+const OWNER_REVENUE_SHARE_PCT = 20; // must stay in sync with server/src/broadcasts.ts OWNER_REVENUE_SHARE
+
 type Props = {
   serverId: string;
   sparksBalance: number;
   socket: Socket | null;
+  /** True when the current user owns this server — shows revenue share hint and skips cost UI */
+  isOwner?: boolean;
 };
 
-export function BroadcastButton({ serverId, sparksBalance, socket }: Props) {
+export function BroadcastButton({ serverId, sparksBalance, socket, isOwner = false }: Props) {
   const [open, setOpen]                 = useState(false);
   const [selectedType, setSelectedType] = useState('text');
   const [content, setContent]           = useState('');
@@ -225,14 +229,30 @@ export function BroadcastButton({ serverId, sparksBalance, socket }: Props) {
                 ? <span className="text-emerald-400">Queue clear · sends immediately</span>
                 : <span className="text-accent-amber">{queueDepth} in queue</span>
               }
-              {surgeMult > 1.0 && (
+              {!isOwner && surgeMult > 1.0 && (
                 <span className="text-rose-400 ml-2 text-[11px]">{surgeMult}× surge</span>
               )}
             </div>
-            <div className={`text-[13px] font-bold ${canAfford ? 'text-accent-amber' : 'text-rose-400'}`}>
-              ✦ {finalCost} Sparks
-            </div>
+            {isOwner ? (
+              <div className="text-[12px] text-emerald-400 font-semibold">Free · Owner</div>
+            ) : (
+              <div className={`text-[13px] font-bold ${canAfford ? 'text-accent-amber' : 'text-rose-400'}`}>
+                ✦ {finalCost} Sparks
+              </div>
+            )}
           </div>
+
+          {/* Owner revenue hint — shown only to server owners */}
+          {isOwner && (
+            <div className="flex items-center gap-2 bg-emerald-500/[0.06] border border-emerald-500/20 rounded-xl px-3 py-2.5">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#34d399" strokeWidth="2" className="shrink-0">
+                <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>
+              </svg>
+              <span className="text-[11px] text-emerald-400 leading-snug">
+                You earn <span className="font-semibold">{OWNER_REVENUE_SHARE_PCT}%</span> of Sparks spent on member broadcasts in your space
+              </span>
+            </div>
+          )}
 
           {/* Feedback messages */}
           {!canAfford && !error && (

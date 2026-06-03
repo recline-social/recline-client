@@ -1077,37 +1077,26 @@ export default function App() {
       });
     };
 
+    // BL-002 fix: dm:call:accepted is sent to BOTH caller and callee.
+    // Both sides build RTCPeerConnection here with proper ICE servers.
+    // Caller (outgoing-ringing) creates offer; callee (connecting, no pc yet) awaits offer.
     const onDmCallAccepted = (data: { dmChannelId: string; iceServers: RTCIceServer[] }) => {
       const call = dmCallRef.current;
       if (!call || call.dmChannelId !== data.dmChannelId) return;
-      if (call.status !== 'outgoing-ringing') return;
-      // Caller side: create PC and send offer
-      const pc = new RTCPeerConnection({ iceServers: data.iceServers });
-      if (call.localStream) {
-        for (const track of call.localStream.getTracks()) pc.addTrack(track, call.localStream);
+
+      if (call.status === 'outgoing-ringing') {
+        // Caller path: create PC with ICE servers, send offer
+        const pc = buildDmPeerConnection(data.iceServers, data.dmChannelId, call.localStream);
+        pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: call.hasVideo })
+          .then((offer) => pc.setLocalDescription(offer))
+          .then(() => { s.emit('dm:call:offer', { dmChannelId: data.dmChannelId, sdp: pc.localDescription! }); })
+          .catch(console.error);
+        setDmCall((prev) => prev ? { ...prev, status: 'connecting', pc } : prev);
+      } else if (call.status === 'connecting' && !call.pc) {
+        // Callee path: create PC with ICE servers, wait for offer from caller
+        const pc = buildDmPeerConnection(data.iceServers, data.dmChannelId, call.localStream);
+        setDmCall((prev) => prev ? { ...prev, pc } : prev);
       }
-      pc.onicecandidate = ({ candidate }) => {
-        if (candidate) s.emit('dm:call:ice', { dmChannelId: data.dmChannelId, candidate: candidate.toJSON() });
-      };
-      pc.ontrack = ({ streams }) => {
-        const stream = streams[0];
-        if (stream) setDmCall((prev) => prev ? { ...prev, peerStream: stream } : prev);
-      };
-      pc.oniceconnectionstatechange = () => {
-        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-          setDmCall((prev) => prev ? { ...prev, status: 'active', startedAt: Date.now() } : prev);
-        }
-        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-          teardownDmCall();
-        }
-      };
-      pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: call.hasVideo })
-        .then((offer) => pc.setLocalDescription(offer))
-        .then(() => {
-          s.emit('dm:call:offer', { dmChannelId: data.dmChannelId, sdp: pc.localDescription! });
-        })
-        .catch(console.error);
-      setDmCall((prev) => prev ? { ...prev, status: 'connecting', pc } : prev);
     };
 
     const onDmCallRejected = (data: { dmChannelId: string }) => {
@@ -2075,13 +2064,24 @@ export default function App() {
       console.error('[DM call] getUserMedia failed:', err);
       return;
     }
-    // Create the RTCPeerConnection now — caller will send ICE servers in dm:call:accepted
-    // We build PC after receiving iceServers from the server via dm:call:accepted
-    // For now, get ICE servers by emitting accept — server sends dm:call:accepted back to both
-    const pc = new RTCPeerConnection(); // will be replaced with proper iceServers
-    for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
+    // BL-002 fix: don't create RTCPeerConnection yet — wait for dm:call:accepted
+    // which delivers ICE servers from the server. The onDmCallAccepted handler
+    // (below) creates the PC with proper ICE servers for BOTH caller and callee.
+    // Store localStream and pending state; PC is created on dm:call:accepted.
+    setDmCall((prev) => prev ? {
+      ...prev, status: 'connecting', hasVideo: withVideo, localStream, pc: null,
+    } : prev);
+    playCallSound('join_call');
+    socketRef.current?.emit('dm:call:accept', { dmChannelId: call.dmChannelId });
+  }
+
+  function buildDmPeerConnection(iceServers: RTCIceServer[], dmChannelId: string, localStream: MediaStream | null): RTCPeerConnection {
+    const pc = new RTCPeerConnection({ iceServers });
+    if (localStream) {
+      for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
+    }
     pc.onicecandidate = ({ candidate }) => {
-      if (candidate) socketRef.current?.emit('dm:call:ice', { dmChannelId: call.dmChannelId, candidate: candidate.toJSON() });
+      if (candidate) socketRef.current?.emit('dm:call:ice', { dmChannelId, candidate: candidate.toJSON() });
     };
     pc.ontrack = ({ streams }) => {
       const stream = streams[0];
@@ -2091,15 +2091,9 @@ export default function App() {
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         setDmCall((prev) => prev ? { ...prev, status: 'active', startedAt: Date.now() } : prev);
       }
-      if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-        teardownDmCall();
-      }
+      if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') teardownDmCall();
     };
-    setDmCall((prev) => prev ? {
-      ...prev, status: 'connecting', hasVideo: withVideo, localStream, pc,
-    } : prev);
-    playCallSound('join_call');
-    socketRef.current?.emit('dm:call:accept', { dmChannelId: call.dmChannelId });
+    return pc;
   }
 
   function rejectDmCall() {
@@ -2542,6 +2536,7 @@ export default function App() {
                       serverId={activeServerId}
                       sparksBalance={sparksBalance}
                       socket={socketRef.current}
+                      isOwner={canManage}
                     />
                   ) : undefined}
                 />
@@ -2732,7 +2727,9 @@ export default function App() {
             isPlatformOwner: user.isPlatformOwner ?? false,
             isSupporter: user.isSupporter ?? false,
             role: 'member',
-            joinedAt: 0,
+            // Use account creation date for own profile "Joined" date.
+            // user.createdAt is set by the login/me/signup responses (users.created_at).
+            joinedAt: user.createdAt ?? 0,
             roles: Object.values(membersByServer).flat().find((m) => m.id === user.id)?.roles ?? [],
           };
           return (

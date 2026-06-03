@@ -7,6 +7,8 @@ export type User = {
   isStaff?: boolean;
   isPlatformOwner?: boolean;
   isSupporter?: boolean;
+  /** Unix ms — account creation date from users.created_at. Set by login/me/signup responses. */
+  createdAt?: number;
 };
 
 export type ServerRoleBadge = {
