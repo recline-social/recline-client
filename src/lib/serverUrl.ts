@@ -3,12 +3,17 @@
 
 export const DEFAULT_SERVER_URL = 'https://app.recline.social';
 
-function isDesktop(): boolean {
+export function isDesktop(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-function isCapacitor(): boolean {
+export function isCapacitor(): boolean {
   return typeof window !== 'undefined' && typeof (window as any).Capacitor !== 'undefined';
+}
+
+/** True when running inside a native client (Tauri desktop or Capacitor mobile). */
+export function isNativeClient(): boolean {
+  return isDesktop() || isCapacitor();
 }
 
 /** Returns the base server URL prefix. Empty string for web (same-origin), full URL for Tauri/Capacitor. */
