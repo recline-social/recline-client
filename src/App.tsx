@@ -2379,7 +2379,7 @@ export default function App() {
       // Upload backup if the server doesn't have one yet
       if (password) {
         try {
-          const { backup } = await api.getDmKeyBackup();
+          const { backup } = await api.getDmKeyBackup(password);
           if (!backup) {
             const privJwk = await exportPrivateKeyJwk(pair.privateKey);
             if (privJwk) {
@@ -2395,7 +2395,7 @@ export default function App() {
     // No local key — try restoring from server backup
     if (password) {
       try {
-        const { backup } = await api.getDmKeyBackup();
+        const { backup } = await api.getDmKeyBackup(password);
         if (backup) {
           const restored = await decryptDmKeyBackup(backup, password);
           if (restored) {
@@ -2432,7 +2432,7 @@ export default function App() {
    * Clears the current local key and restores the backup using the provided password.
    */
   async function handleSyncDmKey(password: string): Promise<void> {
-    const { backup } = await api.getDmKeyBackup();
+    const { backup } = await api.getDmKeyBackup(password);
     if (!backup) throw new Error('No key backup found on server. Log in on your other device first.');
     const restored = await decryptDmKeyBackup(backup, password);
     if (!restored) throw new Error('Wrong password or corrupted backup.');

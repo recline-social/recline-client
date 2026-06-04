@@ -27,7 +27,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http: https: ws: wss:; script-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data: https://fonts.gstatic.com; object-src 'none'; base-uri 'self'; frame-src https://challenges.cloudflare.com; worker-src 'self' blob:"
+      "csp": "default-src 'self'; connect-src 'self' https://app.recline.social wss://app.recline.social https://challenges.cloudflare.com https://browser-intake-datadoghq.com https://*.browser-intake-datadoghq.com https://o0.ingest.sentry.io; script-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https://app.recline.social; media-src 'self' blob:; font-src 'self' data: https://fonts.gstatic.com; object-src 'none'; base-uri 'self'; frame-src https://challenges.cloudflare.com; worker-src 'self' blob:"
     }
   },
   "bundle": {
