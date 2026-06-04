@@ -160,6 +160,8 @@ export type DmChannel = {
   /** Peer's ECDH public key (JWK string). Null if they haven't registered one yet. */
   otherPublicKey: string | null;
   otherAvatarUrl?: string | null;
+  /** Peer's account creation timestamp — used as the "Joined" date on profile cards. */
+  otherCreatedAt?: number;
   createdAt: number;
   lastMessageAt: number | null;
 };
@@ -250,5 +252,8 @@ export type Friend = {
   username: string;
   displayName: string;
   avatarUrl?: string | null;
+  /** Friendship creation timestamp */
   createdAt?: number;
+  /** The other user's account creation timestamp — used as "Joined" date on profile cards. */
+  otherCreatedAt?: number;
 };

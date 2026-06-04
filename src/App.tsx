@@ -2933,7 +2933,7 @@ export default function App() {
               displayName: dm.otherDisplayName,
               avatarUrl: dm.otherAvatarUrl ?? null,
               role: 'member',
-              joinedAt: 0,
+              joinedAt: dm.otherCreatedAt ?? 0,
               roles: [],
             } as import('./types').Member;
           }
@@ -2949,7 +2949,7 @@ export default function App() {
               displayName: friend.displayName,
               avatarUrl: friend.avatarUrl ?? null,
               role: 'member',
-              joinedAt: 0,
+              joinedAt: friend.otherCreatedAt ?? 0,
               roles: [],
             } as import('./types').Member;
           }

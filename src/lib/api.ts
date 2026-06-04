@@ -56,6 +56,8 @@ export interface UserPayload {
   isStaff?: boolean;
   isPlatformOwner?: boolean;
   isSupporter?: boolean;
+  /** Unix ms — users.created_at. Present on all login/signup/me responses. */
+  createdAt?: number;
 }
 
 export interface ServerPayload {
