@@ -9,6 +9,9 @@ export type User = {
   isSupporter?: boolean;
   /** Unix ms — account creation date from users.created_at. Set by login/me/signup responses. */
   createdAt?: number;
+  /** PBKDF2 salt for v2 auth key derivation. Present on /api/auth/me response for v2 users.
+   *  Used by the client to derive the auth key locally before sending to confirmation endpoints. */
+  authKdfSalt?: string | null;
 };
 
 export type ServerRoleBadge = {

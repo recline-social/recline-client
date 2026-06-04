@@ -58,6 +58,9 @@ export interface UserPayload {
   isSupporter?: boolean;
   /** Unix ms — users.created_at. Present on all login/signup/me responses. */
   createdAt?: number;
+  /** PBKDF2 salt for v2 auth key derivation. Exposed to authenticated clients via /api/auth/me
+   *  so they can derive the auth key locally for confirmation endpoints (zero-knowledge). */
+  authKdfSalt?: string | null;
 }
 
 export interface ServerPayload {
@@ -199,11 +202,30 @@ export const api = {
    *  Initial registration (no key yet) does not require a password. */
   // CRYPTO-008: password is sent in the POST body, not as a query parameter.
   // GET ?password=... would expose credentials in server logs, browser history, and Referer headers.
-  getDmKeyBackup: (password: string) =>
-    request<{ backup: string | null }>('/api/auth/me/dm-key-backup/retrieve', {
+  /** Retrieve the encrypted DM key backup.
+   *  Zero-knowledge path: if authKdfSalt is provided the caller has already PBKDF2-derived
+   *  the auth key, so we send `authDerivedKey` and the raw password never leaves the device.
+   *  Legacy path: authKdfSalt is null/undefined → send raw password (v1 users). */
+  getDmKeyBackup: (password: string, authKdfSalt?: string | null) => {
+    // If we have the user's KDF salt, derive first — raw password stays on device.
+    // The server's retrieve endpoint accepts authDerivedKey directly and verifies via Argon2id
+    // without any server-side re-derivation (the client already did PBKDF2).
+    if (authKdfSalt) {
+      return import('./crypto').then(({ deriveAuthKey }) =>
+        deriveAuthKey(password, authKdfSalt).then(derived =>
+          request<{ backup: string | null }>('/api/auth/me/dm-key-backup/retrieve', {
+            method: 'POST',
+            body: JSON.stringify({ authDerivedKey: derived }),
+          })
+        )
+      );
+    }
+    // Fallback for v1 users whose salt is not available
+    return request<{ backup: string | null }>('/api/auth/me/dm-key-backup/retrieve', {
       method: 'POST',
       body: JSON.stringify({ password }),
-    }),
+    });
+  },
 
   putDmKeyBackup: (backup: string) =>
     request<{ ok: boolean }>('/api/auth/me/dm-key-backup', {

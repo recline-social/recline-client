@@ -2364,6 +2364,9 @@ export default function App() {
    * When a key already exists locally, uploads a backup if the server has none yet.
    */
   async function setupDmKeys(password: string): Promise<void> {
+    // authKdfSalt is included in the /api/auth/me response for v2 users.
+    // Passing it to getDmKeyBackup ensures the derived key is sent instead of the raw password.
+    const authKdfSalt = user?.authKdfSalt ?? null;
     let pair = await loadDmKeyPair();
 
     if (pair) {
@@ -2373,7 +2376,7 @@ export default function App() {
       // Upload backup if the server doesn't have one yet
       if (password) {
         try {
-          const { backup } = await api.getDmKeyBackup(password);
+          const { backup } = await api.getDmKeyBackup(password, authKdfSalt);
           if (!backup) {
             const privJwk = await exportPrivateKeyJwk(pair.privateKey);
             if (privJwk) {
@@ -2389,7 +2392,7 @@ export default function App() {
     // No local key — try restoring from server backup
     if (password) {
       try {
-        const { backup } = await api.getDmKeyBackup(password);
+        const { backup } = await api.getDmKeyBackup(password, authKdfSalt);
         if (backup) {
           const restored = await decryptDmKeyBackup(backup, password);
           if (restored) {
@@ -2426,7 +2429,7 @@ export default function App() {
    * Clears the current local key and restores the backup using the provided password.
    */
   async function handleSyncDmKey(password: string): Promise<void> {
-    const { backup } = await api.getDmKeyBackup(password);
+    const { backup } = await api.getDmKeyBackup(password, user?.authKdfSalt ?? null);
     if (!backup) throw new Error('No key backup found on server. Log in on your other device first.');
     const restored = await decryptDmKeyBackup(backup, password);
     if (!restored) throw new Error('Wrong password or corrupted backup.');
