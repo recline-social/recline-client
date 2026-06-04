@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, setToken } from '../lib/api';
+import { deriveAuthKey, generateAuthSalt } from '../lib/crypto';
 import type { User } from '../types';
 
 // Site key is PUBLIC — baked in at Vite build time. Empty string → widget disabled.
@@ -408,9 +409,14 @@ export function Auth({ onAuthed }: Props) {
     setError(null);
     try {
       if (mode === 'signup') {
+        // Zero-knowledge: derive auth key client-side before sending.
+        // The raw password never leaves this device.
+        const authSalt = generateAuthSalt();
+        const authDerivedKey = await deriveAuthKey(password, authSalt);
         const r = await api.signup({
           username,
-          password,
+          authKdfSalt: authSalt,
+          authDerivedKey,
           displayName: displayName || undefined,
           cfTurnstileResponse: tsToken || undefined,
         });
@@ -420,9 +426,16 @@ export function Auth({ onAuthed }: Props) {
         setBackupCodes(r.backupCodes);
         setScreen('backup-codes');
       } else {
+        // Zero-knowledge login: fetch auth version + salt first.
+        // v2 users: derive key locally, send derived key (never raw password).
+        // v1 legacy users: send raw password once — server migrates them to v2.
+        const saltInfo = await api.getAuthSalt(username);
+        const authPassword = (saltInfo.version === 'v2' && saltInfo.salt)
+          ? await deriveAuthKey(password, saltInfo.salt)
+          : password;
         const r = await api.login({
           username,
-          password,
+          password: authPassword,
           cfTurnstileResponse: tsToken || undefined,
         });
         if (r.totp_required) {

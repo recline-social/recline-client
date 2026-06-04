@@ -1,6 +1,36 @@
 const PBKDF2_ITERS = 200_000;
 const SESSION_KEY_PREFIX = 'recline.aeskey.';
 
+// ── Zero-knowledge auth key derivation ───────────────────────────────────────
+// These must stay in sync with the server-side KDF parameters in auth.ts.
+const AUTH_KDF_ITERATIONS = 100_000;
+
+/** Generate a cryptographically random 32-byte hex salt for auth key derivation. */
+export function generateAuthSalt(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Derive the 256-bit auth key from the user's password + per-user salt.
+ * This derived key is sent to the server instead of the raw password —
+ * the plaintext password never leaves the device.
+ *
+ * Output: lowercase hex string (64 chars = 32 bytes).
+ * Algorithm: PBKDF2-SHA256, 100k iterations, via WebCrypto (native speed).
+ */
+export async function deriveAuthKey(password: string, saltHex: string): Promise<string> {
+  const saltBytes = new Uint8Array(saltHex.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: saltBytes, iterations: AUTH_KDF_ITERATIONS, hash: 'SHA-256' },
+    keyMaterial,
+    256,
+  );
+  return Array.from(new Uint8Array(bits), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 // ── RUM custom action helper ──────────────────────────────────────────────────
 // Uses window.DD_RUM injected by the RUM SDK — no import needed, safe to call
 // even before the SDK initialises (just a no-op until it's ready).

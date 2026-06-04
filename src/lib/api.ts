@@ -171,7 +171,7 @@ export type LoginResult = LoginSuccess | LoginTotpChallenge;
 
 export const api = {
   // ── Auth ──────────────────────────────────────────────────────────────────
-  signup: (body: { username: string; password: string; displayName?: string; cfTurnstileResponse?: string }) =>
+  signup: (body: { username: string; authKdfSalt: string; authDerivedKey: string; displayName?: string; cfTurnstileResponse?: string }) =>
     request<{ token: string; user: UserPayload; backupCodes: string[] }>(
       '/api/auth/signup',
       { method: 'POST', body: JSON.stringify(body) },
@@ -203,6 +203,12 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ backup }),
     }),
+
+  /** Fetch per-user KDF salt before login so the client can derive the auth key. */
+  getAuthSalt: (username: string) =>
+    request<{ version: 'v1' | 'v2'; salt?: string }>(
+      `/api/auth/salt?username=${encodeURIComponent(username.trim().toLowerCase())}`,
+    ),
 
   registerPublicKey: (jwkString: string, password?: string) =>
     request<{ ok: boolean }>('/api/auth/me/public-key', {
