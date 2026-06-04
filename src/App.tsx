@@ -562,6 +562,10 @@ export default function App() {
     s.on('disconnect', onDisconnect);
     s.io.on('reconnect_attempt', onReconnectAttempt);
     s.on('connect_error', onConnectError);
+    // AUTH-025: handle server-side session revocation (emitted by DELETE /api/auth/sessions
+    // and POST /api/auth/me/change-password). Disconnect the socket and log out so that
+    // other sessions lose real-time access immediately when revoked.
+    s.on('session:revoked', () => { logout(); });
     if (s.connected) setConnectionState('connected');
 
     const onMessage = async (msg: WireMessage) => {

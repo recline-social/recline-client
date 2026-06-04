@@ -310,8 +310,8 @@ export async function saveDmKeyPair(pair: CryptoKeyPair): Promise<void> {
       privateKey = await crypto.subtle.importKey(
         'jwk', privJwk,
         { name: 'ECDH', namedCurve: 'P-256' },
-        false,          // NON-extractable
-        [],
+        false,                          // NON-extractable
+        ['deriveKey', 'deriveBits'],    // CRYPTO-010: must NOT be [] — empty usages makes the key permanently unusable for ECDH operations
       );
     }
     const pubJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
