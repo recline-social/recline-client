@@ -2459,9 +2459,20 @@ export default function App() {
     await api.registerPublicKey(pubJwk, password); // throws on network/server error
     // Server accepted the key — now commit locally
     await archiveCurrentKeyPair();
+    // Export private key BEFORE saving (while still extractable — saveDmKeyPair re-imports as non-extractable)
+    const privJwkForBackup = await exportPrivateKeyJwk(newPair.privateKey);
     await saveDmKeyPair(newPair);
     dmKeyPairRef.current = newPair;
     clearAllDmKeys();
+    // CRYPTO-014: upload new backup blob so other devices can restore the rotated key.
+    // Without this, any device that was synced before the rotation retains the old key
+    // and can no longer decrypt new DMs.
+    if (privJwkForBackup && password) {
+      try {
+        const blob = await encryptDmKeyBackup(privJwkForBackup, password);
+        await api.putDmKeyBackup(blob);
+      } catch { /* non-fatal — user can re-sync manually */ }
+    }
   }
 
   /* ------------------------ Render ------------------------ */
