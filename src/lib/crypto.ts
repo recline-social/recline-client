@@ -119,9 +119,15 @@ export async function decryptText(key: CryptoKey, ciphertext: string, nonce: str
 // ── ECDH P-256 DM key exchange ────────────────────────────────────────────────
 // Key pair: generated once and stored in IndexedDB.
 //   • Public key:  extractable (must be exported as JWK and uploaded to the server)
-//   • Private key: NON-extractable — stored as a live CryptoKey object in IndexedDB.
-//     An XSS attacker on the same origin can still USE the key (call deriveKey) but
-//     cannot read or exfiltrate the raw key material to another origin.
+//   • Private key: stored as NON-extractable in IndexedDB after the initial backup export.
+//     SECURITY NOTE: the key is generated as extractable:true to support the cross-device
+//     backup feature (encryptDmKeyBackup / decryptDmKeyBackup). saveDmKeyPair() re-imports
+//     the private key as extractable:false before writing to IndexedDB, so the live stored
+//     key cannot be exported by same-origin script. During the generation→backup→save
+//     window the extractable version exists only in memory, not in storage.
+//     An XSS attacker cannot export the key from IndexedDB, but could theoretically
+//     intercept it during the in-memory window if execution happens between generateDmKeyPair
+//     and saveDmKeyPair. For a fully hardened deployment, use a CSP that blocks XSS entirely.
 // DM AES-GCM key: ECDH shared secret → HKDF-SHA256 → AES-GCM-256.
 // Per-conversation key is cached in memory by dmChannelId.
 
@@ -267,6 +273,10 @@ export async function decryptDmKeyBackup(blob: string, password: string): Promis
     const privJwk  = JSON.parse(new TextDecoder().decode(plainBuf)) as JsonWebKey;
     // Reconstruct the public key from the private JWK — P-256 JWKs carry x and y.
     const pubJwk: JsonWebKey = { kty: privJwk.kty, crv: privJwk.crv, x: privJwk.x, y: privJwk.y };
+    // Import the restored key pair. Public key is extractable (needed for JWK upload).
+    // Private key is imported as extractable:true here so exportPrivateKeyJwk() can be
+    // called if a new backup needs to be uploaded immediately after restore. saveDmKeyPair()
+    // will re-import as non-extractable when storing to IndexedDB.
     const [publicKey, privateKey] = await Promise.all([
       crypto.subtle.importKey('jwk', pubJwk,  { name: 'ECDH', namedCurve: 'P-256' }, true,  []),
       crypto.subtle.importKey('jwk', privJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']),
@@ -283,12 +293,29 @@ export async function exportPublicKeyJwk(publicKey: CryptoKey): Promise<string> 
   return JSON.stringify(jwk);
 }
 
-/** Persist the key pair to IndexedDB. Private key is stored as a CryptoKey (non-extractable). */
+/** Persist the key pair to IndexedDB.
+ *
+ * AUTH-012/CRYPTO-003: If the private key is extractable (e.g. freshly generated for backup
+ * export), re-import it as NON-extractable before storing. This ensures the key in IndexedDB
+ * cannot be exported by same-origin script (XSS, malicious extension). The backup export
+ * should happen BEFORE calling saveDmKeyPair — callers hold the extractable version in memory
+ * only long enough to encrypt the backup, then this function stores it non-extractably.
+ */
 export async function saveDmKeyPair(pair: CryptoKeyPair): Promise<void> {
   try {
-    // Export the public key JWK for re-import (needed on load)
+    let privateKey = pair.privateKey;
+    if (privateKey.extractable) {
+      // Re-import as non-extractable so the stored key cannot be exfiltrated by XSS.
+      const privJwk = await crypto.subtle.exportKey('jwk', privateKey);
+      privateKey = await crypto.subtle.importKey(
+        'jwk', privJwk,
+        { name: 'ECDH', namedCurve: 'P-256' },
+        false,          // NON-extractable
+        [],
+      );
+    }
     const pubJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
-    await idbSet('current', { pubJwk, privateKey: pair.privateKey });
+    await idbSet('current', { pubJwk, privateKey });
   } catch { /* non-fatal */ }
 }
 
@@ -455,15 +482,20 @@ export async function loadDmKeyHistory(): Promise<CryptoKeyPair[]> {
 
 const memoryKeys = new Map<string, CryptoKey>();
 
-// ── sessionStorage persistence (CRYPTO-001 hardened) ─────────────────────────
-// Previously we exported the raw AES-GCM key JWK to sessionStorage — readable by
-// any XSS on the origin, giving an attacker raw key bytes to decrypt all messages
-// offline. Now we store only the passphrase + kdfSalt and re-derive on reload.
+// ── sessionStorage persistence ────────────────────────────────────────────────
+// Previously we exported the raw AES-GCM key JWK to sessionStorage — any XSS
+// could read the raw key bytes and decrypt all messages offline without any further
+// work. Now we store only the passphrase + kdfSalt and re-derive on reload.
 //
-// Trade-off: page reload costs one PBKDF2 call (~300ms at 200k iterations), but the
-// key material itself never appears in sessionStorage. XSS can still read the
-// passphrase, but deriving the key then requires running PBKDF2 locally — it cannot
-// simply import the raw bytes. This meaningfully raises the bar for offline exfil.
+// SECURITY NOTE (CRYPTO-001): storing the passphrase in sessionStorage is a
+// deliberate UX trade-off for reload persistence. An XSS attacker on the same
+// origin CAN read sessionStorage, obtain both the passphrase and kdfSalt, run
+// PBKDF2 locally (< 1 second in-browser), and reconstruct the AES-GCM-256 key.
+// This design improves on raw-key storage (attacker can no longer directly import
+// extracted bytes into other environments) but does NOT prevent a sophisticated
+// XSS from decrypting server channel messages in-browser.
+// For maximum security: do not persist to sessionStorage and require the user to
+// re-enter the passphrase on every page reload.
 //
 // Prefix change: 'recline.aeskey.' → 'recline.passphrase.' — old keys are stale
 // and will be ignored / cleaned up by the new removeKeyFromSession.
