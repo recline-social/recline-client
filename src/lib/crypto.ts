@@ -384,20 +384,9 @@ export function getCachedDmKey(dmChannelId: string): CryptoKey | undefined {
   return dmMemoryKeys.get(dmChannelId);
 }
 
-export async function importDmKeyFromSession(dmChannelId: string): Promise<CryptoKey | null> {
-  try {
-    const raw = sessionStorage.getItem(DM_AESKEY_PREFIX + dmChannelId);
-    if (!raw) return null;
-    const jwk = JSON.parse(raw);
-    return await crypto.subtle.importKey('jwk', jwk, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
-  } catch {
-    sessionStorage.removeItem(DM_AESKEY_PREFIX + dmChannelId);
-    return null;
-  }
-}
-
 export function clearDmKey(dmChannelId: string) {
   dmMemoryKeys.delete(dmChannelId);
+  // Also remove any legacy sessionStorage entry from the old scheme (pre-memory-only migration)
   sessionStorage.removeItem(DM_AESKEY_PREFIX + dmChannelId);
 }
 

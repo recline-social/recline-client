@@ -195,8 +195,13 @@ export const api = {
   /** Upload this client's ECDH public key so peers can derive DM keys.
    *  `password` is required when overwriting an existing key (CRYPTO-005).
    *  Initial registration (no key yet) does not require a password. */
+  // CRYPTO-008: password is sent in the POST body, not as a query parameter.
+  // GET ?password=... would expose credentials in server logs, browser history, and Referer headers.
   getDmKeyBackup: (password: string) =>
-    request<{ backup: string | null }>(`/api/auth/me/dm-key-backup?password=${encodeURIComponent(password)}`),
+    request<{ backup: string | null }>('/api/auth/me/dm-key-backup/retrieve', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
 
   putDmKeyBackup: (backup: string) =>
     request<{ ok: boolean }>('/api/auth/me/dm-key-backup', {

@@ -43,7 +43,6 @@ import {
   deriveDmKey,
   cacheDmKey,
   getCachedDmKey,
-  importDmKeyFromSession,
   clearAllDmKeys,
   rotateDmKeyPair,
   archiveCurrentKeyPair,
@@ -1797,13 +1796,8 @@ export default function App() {
     const cached = getCachedDmKey(dmChannel.id);
     if (cached) return cached;
 
-    // Try session storage first (survives page refresh without re-deriving)
-    const fromSession = await importDmKeyFromSession(dmChannel.id);
-    if (fromSession) {
-      cacheDmKey(dmChannel.id, fromSession);
-      return fromSession;
-    }
-
+    // DM AES-GCM keys are memory-only (non-extractable) — no sessionStorage persistence.
+    // On page reload the key is re-derived from the ECDH key pair (cheap, ~1ms).
     if (!dmKeyPairRef.current || !dmChannel.otherPublicKey) return null;
     try {
       const peerKey = await importPeerPublicKey(dmChannel.otherPublicKey);
