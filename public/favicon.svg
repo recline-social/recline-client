@@ -1,32 +1,11 @@
-<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="bg" x1="4" y1="3" x2="60" y2="62" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#020617"/>
-      <stop offset="0.55" stop-color="#08111F"/>
-      <stop offset="1" stop-color="#1E1B4B"/>
-    </linearGradient>
-    <radialGradient id="glowA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(17 15) scale(34)">
-      <stop stop-color="#8B5CF6" stop-opacity="0.72"/>
-      <stop offset="1" stop-color="#8B5CF6" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="glowB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(48 49) scale(30)">
-      <stop stop-color="#22D3EE" stop-opacity="0.58"/>
-      <stop offset="1" stop-color="#22D3EE" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="mark" x1="18" y1="15" x2="48" y2="52" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#A78BFA"/>
-      <stop offset="0.5" stop-color="#22D3EE"/>
-      <stop offset="1" stop-color="#34D399"/>
-    </linearGradient>
-  </defs>
-
-  <rect x="4" y="4" width="56" height="56" rx="15" fill="url(#bg)"/>
-  <rect x="4" y="4" width="56" height="56" rx="15" fill="url(#glowA)"/>
-  <rect x="4" y="4" width="56" height="56" rx="15" fill="url(#glowB)"/>
-  <rect x="5" y="5" width="54" height="54" rx="14" stroke="white" stroke-opacity="0.12"/>
-
-  <path d="M18 41 C18 27 27 18 40 18 C50 18 56 24 56 32 C56 41 49 46 39 46 H28 V53 H18 V41Z" fill="url(#mark)"/>
-  <path d="M28 38 H38 C43 38 46 36 46 32 C46 29 43 27 38 27 C32 27 28 31 28 38Z" fill="#020617" fill-opacity="0.84"/>
-  <path d="M20 53 C27 49 36 49 45 53" stroke="#CFFAFE" stroke-opacity="0.85" stroke-width="3" stroke-linecap="round"/>
-  <circle cx="21" cy="20" r="2.4" fill="#22D3EE"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="13" fill="#0F0F12"/>
+  <text
+    x="32" y="50"
+    text-anchor="middle"
+    font-family="'Segoe UI Black','Segoe UI','Arial Black','Helvetica Neue',sans-serif"
+    font-size="52"
+    font-weight="900"
+    fill="#ffffff"
+  >R</text>
 </svg>
