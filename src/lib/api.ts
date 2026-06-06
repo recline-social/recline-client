@@ -127,6 +127,7 @@ export interface DmMessagePayload {
   nonce: string | null;
   body: string | null;
   createdAt: number;
+  senderEcdhPublicKey?: string | null;
 }
 
 export interface ReportPayload {

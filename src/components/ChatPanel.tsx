@@ -5,6 +5,7 @@ import { Composer, type AnimationType, type ReplyingTo } from './Composer';
 import { TypingIndicator } from './TypingIndicator';
 import type { Channel, DecodedMessage, FileAttachment, Member, User } from '../types';
 
+
 type Props = {
   channel: Channel;
   messages: DecodedMessage[];
@@ -63,6 +64,31 @@ export function ChatPanel({
   const prevScrollHeightRef = useRef(0);
   const [replyingTo, setReplyingTo] = useState<ReplyingTo | null>(null);
 
+  // ── Panel-level drag-and-drop ──────────────────────────────────────────────
+  const dragCounterRef = useRef(0);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [panelDroppedFile, setPanelDroppedFile] = useState<File | null>(null);
+
+  function handlePanelDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    dragCounterRef.current++;
+    if (Array.from(e.dataTransfer.types).includes('Files')) setIsDraggingOver(true);
+  }
+  function handlePanelDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    if (--dragCounterRef.current === 0) setIsDraggingOver(false);
+  }
+  function handlePanelDragOver(e: React.DragEvent) { e.preventDefault(); }
+  function handlePanelDrop(e: React.DragEvent) {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setIsDraggingOver(false);
+    if (!encrypted) return;
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    setPanelDroppedFile(file);
+  }
+
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -99,7 +125,25 @@ export function ChatPanel({
   }, [messages]);
 
   return (
-    <div className="flex-1 min-w-0 flex flex-col bg-ink-900/40 relative overflow-hidden">
+    <div
+      className="flex-1 min-w-0 flex flex-col bg-ink-900/40 relative overflow-hidden"
+      onDragEnter={handlePanelDragEnter}
+      onDragLeave={handlePanelDragLeave}
+      onDragOver={handlePanelDragOver}
+      onDrop={handlePanelDrop}
+    >
+      {/* Full-panel drop overlay */}
+      {isDraggingOver && (
+        <div className="absolute inset-0 z-50 pointer-events-none flex items-center justify-center bg-accent-violet/[0.06] border-2 border-dashed border-accent-violet/50">
+          <div className="flex flex-col items-center gap-3 px-8 py-6 rounded-2xl bg-ink-900/95 border border-accent-violet/30 shadow-2xl">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-accent-violet">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+            <p className="text-ink-100 font-semibold text-sm">Drop to attach</p>
+            <p className="text-ink-400 text-xs">Images, video, audio, PDF, ZIP and more</p>
+          </div>
+        </div>
+      )}
       <header className="h-12 px-3 md:px-5 flex items-center justify-between border-b border-white/5 bg-ink-900/60 backdrop-blur shrink-0 gap-2">
         {/* Mobile hamburger — opens channel list */}
         {onOpenSidebar && (
@@ -233,6 +277,8 @@ export function ChatPanel({
         onCancelReply={() => setReplyingTo(null)}
         members={members}
         sparksBalance={sparksBalance}
+        externalDroppedFile={panelDroppedFile}
+        onExternalDropConsumed={() => setPanelDroppedFile(null)}
       />
 
       {reportTarget && onReport && (

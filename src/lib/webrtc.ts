@@ -97,7 +97,12 @@ function boostOpusQuality(sdp: string): string {
     'sprop-stereo': '1',
     maxaveragebitrate: String(AUDIO_BITRATE_BPS),
     useinbandfec: '1',
-    usedtx: '0',
+    // usedtx=1 enables Opus Discontinuous Transmission: the encoder stops
+    // sending packets when the input is silence. Peers hear nothing instead of
+    // continuous low-level background noise. This is the primary voice-channel
+    // suppression mechanism — without it, every ambient sound in the room is
+    // transmitted at full bitrate even while nobody is speaking.
+    usedtx: '1',
   };
 
   const fmtpRe = new RegExp(`(a=fmtp:${pt} )(.+)`);
@@ -322,6 +327,26 @@ export class CallManager {
 
   hasVideo() {
     return (this.localStream?.getVideoTracks().length ?? 0) > 0;
+  }
+
+  /**
+   * Toggle browser-native noise suppression + echo cancellation on the live
+   * audio track. Applies applyConstraints() on the captured track; Chrome and
+   * Edge support this at runtime. Other browsers silently ignore unsupported
+   * constraints — they stay on their previous setting, which is fine.
+   */
+  async setNoiseSuppression(enabled: boolean): Promise<void> {
+    const track = this.localStream?.getAudioTracks()[0];
+    if (!track) return;
+    try {
+      await track.applyConstraints({
+        noiseSuppression: enabled,
+        echoCancellation: enabled,
+        autoGainControl: enabled,
+      });
+    } catch {
+      // Not all browsers support runtime constraint changes — fail silently.
+    }
   }
 
   isSharingScreen() {

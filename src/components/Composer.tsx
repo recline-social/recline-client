@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import type { FileAttachment, Member } from '../types';
 import { api } from '../lib/api';
 import { EmojiPicker } from './EmojiPicker';
@@ -82,6 +82,9 @@ type Props = {
   onCancelReply?: () => void;
   members?: Record<string, Member>;
   sparksBalance?: number;
+  /** File dropped on the parent ChatPanel — triggers upload automatically */
+  externalDroppedFile?: File | null;
+  onExternalDropConsumed?: () => void;
 };
 
 // Detect an in-progress @mention at the cursor: returns the query string after @, or null.
@@ -94,7 +97,7 @@ function getMentionQuery(text: string, cursor: number): { query: string; start: 
   return { query: match[1], start };
 }
 
-export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, onCancelReply, members, sparksBalance }: Props) {
+export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, onCancelReply, members, sparksBalance, externalDroppedFile, onExternalDropConsumed }: Props) {
   const [value, setValue] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -115,6 +118,10 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
   const [attachment, setAttachment]         = useState<FileAttachment | null>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
 
+  // Local drag-over state for composer-box highlight (secondary to ChatPanel overlay)
+  const localDragCounterRef = useRef(0);
+  const [localDragOver, setLocalDragOver] = useState(false);
+
   function clearFile() {
     setPendingFile(null);
     setUploadPct(0);
@@ -126,50 +133,49 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
     xhrRef.current = null;
   }
 
-  function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Single upload entry-point — used by picker, local drop, and external panel drop
+  const startUpload = useCallback((file: File) => {
     if (file.size > MAX_FILE_BYTES) {
       setSendError(`File too large — max 200 MB (your file is ${fmtBytes(file.size)})`);
-      if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
+    xhrRef.current?.abort();
     setPendingFile(file);
     setUploadPct(0);
     setUploadDone(false);
     setUploadError(null);
     setAttachment(null);
-
-    // Start upload immediately
-    const xhr = new XMLHttpRequest();
-    xhrRef.current = xhr;
+    if (fileInputRef.current) fileInputRef.current.value = '';
     api.uploadFile(file, (pct) => setUploadPct(pct))
       .then((att) => { setAttachment(att); setUploadDone(true); xhrRef.current = null; })
       .catch((err: Error) => { setUploadError(err.message); xhrRef.current = null; });
+  }, []);
+
+  function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    startUpload(file);
   }
 
-  // Drag-and-drop support on the composer wrapper
-  function handleDrop(e: React.DragEvent) {
+  // Drag directly onto the composer box (fallback / secondary path)
+  function handleComposerDrop(e: React.DragEvent) {
     e.preventDefault();
+    e.stopPropagation();
+    localDragCounterRef.current = 0;
+    setLocalDragOver(false);
     if (disabled) return;
     const file = e.dataTransfer.files?.[0];
-    if (!file) return;
-    // Simulate file input selection
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    if (fileInputRef.current) {
-      fileInputRef.current.files = dt.files;
-      fileInputRef.current.dispatchEvent(new Event('change', { bubbles: true }));
-    } else {
-      // Fallback: trigger upload directly
-      if (file.size > MAX_FILE_BYTES) { setSendError(`File too large — max 200 MB`); return; }
-      setPendingFile(file);
-      setUploadPct(0); setUploadDone(false); setUploadError(null); setAttachment(null);
-      api.uploadFile(file, setUploadPct)
-        .then((att) => { setAttachment(att); setUploadDone(true); })
-        .catch((err: Error) => setUploadError(err.message));
-    }
+    if (file) startUpload(file);
   }
+
+  // External file dropped on the parent ChatPanel — consume it
+  useEffect(() => {
+    if (externalDroppedFile) {
+      startUpload(externalDroppedFile);
+      onExternalDropConsumed?.();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalDroppedFile]);
 
   // Mention autocomplete state
   const [mentionQuery, setMentionQuery] = useState<{ query: string; start: number } | null>(null);
@@ -316,8 +322,6 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
     <div
       className="px-3 md:px-5 pt-1 shrink-0"
       style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 20px)' }}
-      onDragOver={(e) => { e.preventDefault(); }}
-      onDrop={handleDrop}
     >
       {/* Hidden file input */}
       <input
@@ -442,7 +446,17 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
           </div>
         )}
 
-        <div className="panel-inner rounded-2xl px-3 py-2 flex items-end gap-2 focus-within:ring-2 focus-within:ring-accent-violet/30 transition-shadow">
+        <div
+          className={`panel-inner rounded-2xl px-3 py-2 flex items-end gap-2 transition-shadow ${
+            localDragOver
+              ? 'ring-2 ring-accent-violet/60 focus-within:ring-accent-violet/60'
+              : 'focus-within:ring-2 focus-within:ring-accent-violet/30'
+          }`}
+          onDragEnter={(e) => { e.preventDefault(); localDragCounterRef.current++; setLocalDragOver(true); }}
+          onDragLeave={(e) => { e.preventDefault(); if (--localDragCounterRef.current === 0) setLocalDragOver(false); }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={handleComposerDrop}
+        >
           <textarea
             ref={taRef}
             value={value}

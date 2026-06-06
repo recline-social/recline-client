@@ -316,6 +316,8 @@ export default function App() {
   const [activeDmId, setActiveDmId] = useState<string | null>(null);
   const [dmMessages, setDmMessages] = useState<Record<string, DmMessage[]>>({});
   const [dmMsgLoaded, setDmMsgLoaded] = useState<Record<string, boolean>>({});
+  // True once setupDmKeys has placed a key pair in dmKeyPairRef; guards loadDmMessages
+  const [dmKeysReady, setDmKeysReady] = useState(false);
   const [dmHasMore, setDmHasMore] = useState<Record<string, boolean>>({});
   const [dmUnreadMap, setDmUnreadMap] = useState<Record<string, number>>({});
   // DM calls
@@ -1419,12 +1421,12 @@ export default function App() {
 
   /* ------------------------ DM message loader ------------------------ */
   useEffect(() => {
-    if (!activeDmId) return;
+    if (!activeDmId || !dmKeysReady) return;
     loadDmMessages(activeDmId);
     // Clear unread when switching to this DM
     setDmUnreadMap((prev) => prev[activeDmId] ? { ...prev, [activeDmId]: 0 } : prev);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeDmId]);
+  }, [activeDmId, dmKeysReady]);
 
   /* ------------------------ Helpers ------------------------ */
   const memberMap = useMemo(() => {
@@ -2355,6 +2357,7 @@ export default function App() {
     setActiveDmId(null);
     setDmMessages({});
     setDmMsgLoaded({});
+    setDmKeysReady(false);
     setDmUnreadMap({});
     setView('server');
     setFriends([]);
@@ -2375,6 +2378,8 @@ export default function App() {
 
     if (pair) {
       dmKeyPairRef.current = pair;
+      setDmKeysReady(true);
+      setDmMsgLoaded({});
       const pubJwk = await exportPublicKeyJwk(pair.publicKey);
       await api.registerPublicKey(pubJwk).catch(() => {});
       // Upload backup if the server doesn't have one yet
@@ -2402,6 +2407,8 @@ export default function App() {
           if (restored) {
             await saveDmKeyPair(restored);
             dmKeyPairRef.current = restored;
+            setDmKeysReady(true);
+            setDmMsgLoaded({});
             const pubJwk = await exportPublicKeyJwk(restored.publicKey);
             await api.registerPublicKey(pubJwk).catch(() => {});
             return;
@@ -2414,6 +2421,8 @@ export default function App() {
     pair = await generateDmKeyPair();
     await saveDmKeyPair(pair);
     dmKeyPairRef.current = pair;
+    setDmKeysReady(true);
+    setDmMsgLoaded({});
     const pubJwk = await exportPublicKeyJwk(pair.publicKey);
     await api.registerPublicKey(pubJwk).catch(() => {});
     if (password) {
@@ -2440,6 +2449,8 @@ export default function App() {
     await saveDmKeyPair(restored);
     dmKeyPairRef.current = restored;
     clearAllDmKeys();
+    setDmMsgLoaded({});
+    setDmMessages({});
     const pubJwk = await exportPublicKeyJwk(restored.publicKey);
     await api.registerPublicKey(pubJwk).catch(() => {});
   }
