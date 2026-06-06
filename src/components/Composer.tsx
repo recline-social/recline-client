@@ -122,15 +122,23 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
   const localDragCounterRef = useRef(0);
   const [localDragOver, setLocalDragOver] = useState(false);
 
-  function clearFile() {
+  // wasSent=true when called after a successful send — the file is now in a message
+  // so we must NOT delete it from the server. For every other path (user clicks ✕,
+  // switches channel, navigates away) the file is orphaned and should be removed.
+  function clearFile(wasSent = false) {
+    if (!wasSent && attachment) {
+      // Upload completed but the message was never sent — clean up the server file.
+      // Fire-and-forget: 409 means it was already used (race), which is fine.
+      api.deleteUpload(attachment.url).catch(() => {});
+    }
+    xhrRef.current?.abort();
+    xhrRef.current = null;
     setPendingFile(null);
     setUploadPct(0);
     setUploadDone(false);
     setUploadError(null);
     setAttachment(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
-    xhrRef.current?.abort();
-    xhrRef.current = null;
   }
 
   // Single upload entry-point — used by picker, local drop, and external panel drop
@@ -300,7 +308,7 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
       setMentionQuery(null);
       setSelectedAnim(null);
       setAnimPickerOpen(false);
-      clearFile();
+      clearFile(true); // file was sent — don't delete from server
     } catch (err: any) {
       setSendError(err?.message ?? 'Failed to send — press Enter to retry');
     }
@@ -420,7 +428,7 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
               )}
             </div>
             <button
-              onClick={clearFile}
+              onClick={() => clearFile()}
               className="shrink-0 text-ink-400 hover:text-rose-300 transition-colors"
               title="Remove file"
             >

@@ -685,6 +685,11 @@ export const api = {
     });
   },
 
+  /** Delete an uploaded file that was never included in a sent message.
+   *  Server refuses with 409 if the file is already referenced — safe to fire-and-forget. */
+  deleteUpload: (url: string): Promise<void> =>
+    request<void>(`/api/upload/file?url=${encodeURIComponent(url)}`, { method: 'DELETE' }),
+
   invites: {
     /** Public — no auth needed. Returns server name + invite metadata. */
     getInfo: (code: string) =>
