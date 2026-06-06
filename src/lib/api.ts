@@ -259,6 +259,10 @@ export const api = {
       body: JSON.stringify({ publicKey: jwkString, ...(password ? { password } : {}) }),
     }),
 
+  /** Fetch your own currently registered ECDH public key (null if not registered yet). */
+  getMyPublicKey: () =>
+    request<{ publicKey: string | null }>('/api/auth/me/public-key'),
+
   /** Fetch a peer's ECDH public key. Returns null publicKey if not set. */
   getPeerPublicKey: (userId: string) =>
     request<{ publicKey: string | null }>(`/api/users/${userId}/public-key`),
@@ -389,6 +393,7 @@ export const api = {
   sendDmMessage: (
     dmId: string,
     payload: ({ ciphertext: string; nonce: string } | { body: string } | Record<string, unknown>) & {
+      replyToId?: string | null;
       fileUrl?: string; fileName?: string; fileSize?: number; fileType?: string;
     },
   ) =>
@@ -397,11 +402,28 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  /** Edit an E2E encrypted DM message — sends re-encrypted ciphertext + fresh nonce. */
+  editDmMessage: (dmId: string, msgId: string, payload: { ciphertext: string; nonce: string }) =>
+    request<{ ok: boolean; editedAt: number }>(`/api/dms/${dmId}/messages/${msgId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
   deleteDmMessage: (dmId: string, msgId: string) =>
     request<{ ok: boolean }>(`/api/dms/${dmId}/messages/${msgId}`, { method: 'DELETE' }),
 
   clearDmChat: (dmId: string) =>
     request<{ ok: boolean }>(`/api/dms/${dmId}/messages`, { method: 'DELETE' }),
+
+  // ── Push notifications ────────────────────────────────────────────────────
+  getPushVapidKey: () =>
+    request<{ publicKey: string }>('/api/push/vapid-key'),
+
+  subscribePush: (sub: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
+    request<{ ok: boolean }>('/api/push/subscribe', { method: 'POST', body: JSON.stringify(sub) }),
+
+  unsubscribePush: (endpoint: string) =>
+    request<{ ok: boolean }>('/api/push/unsubscribe', { method: 'DELETE', body: JSON.stringify({ endpoint }) }),
 
   // ── Channels ──────────────────────────────────────────────────────────────
   deleteChannel: (serverId: string, channelId: string) =>

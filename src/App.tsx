@@ -322,6 +322,9 @@ export default function App() {
   const [dmMsgLoaded, setDmMsgLoaded] = useState<Record<string, boolean>>({});
   // True once setupDmKeys has placed a key pair in dmKeyPairRef; guards loadDmMessages
   const [dmKeysReady, setDmKeysReady] = useState(false);
+  // True when the local ECDH key doesn't match the server's stored key AND no password is
+  // available to reconcile (page refresh scenario). DM decryption may be degraded.
+  const [dmKeyMismatch, setDmKeyMismatch] = useState(false);
   const [dmHasMore, setDmHasMore] = useState<Record<string, boolean>>({});
   const [dmUnreadMap, setDmUnreadMap] = useState<Record<string, number>>({});
   // DM calls
@@ -936,6 +939,18 @@ export default function App() {
         decoded = { ...wire, body: wire.body ?? '', failed: false };
       }
 
+      // Attach reply preview if this message is a reply
+      if (wire.replyToId && dmChannel) {
+        const existing = dmMessagesRef.current[wire.dmChannelId] ?? [];
+        const target = existing.find((m) => m.id === wire.replyToId);
+        if (target) {
+          const senderName = target.senderId === dmChannel.otherUserId ? dmChannel.otherDisplayName : (user?.displayName ?? 'You');
+          decoded = { ...decoded, decodedReply: { id: target.id, senderId: target.senderId, senderName, body: target.body, failed: target.failed } };
+        } else {
+          decoded = { ...decoded, decodedReply: null };
+        }
+      }
+
       setDmMessages((prev) => {
         const existing = prev[decoded.dmChannelId] ?? [];
         if (existing.find((m) => m.id === decoded.id)) return prev;
@@ -1084,6 +1099,33 @@ export default function App() {
       });
     };
     s.on('dm:reaction:update', onDmReactionUpdate);
+
+    // ── DM message edited ──────────────────────────────────────────────────
+    const onDmMessageEdited = async (data: { id: string; dmChannelId: string; ciphertext: string; nonce: string; editedAt: number }) => {
+      // Find the DM channel for key lookup
+      const dmChannel = dmsRef.current.find((d) => d.id === data.dmChannelId);
+      let newBody = '[could not decrypt]';
+      let failed = true;
+      if (dmChannel && data.ciphertext && data.nonce) {
+        try {
+          newBody = await tryDecryptDm(data.ciphertext, data.nonce, dmChannel, null);
+          failed = false;
+        } catch { /* keep defaults */ }
+      }
+      setDmMessages((prev) => {
+        const msgs = prev[data.dmChannelId];
+        if (!msgs) return prev;
+        return {
+          ...prev,
+          [data.dmChannelId]: msgs.map((m) =>
+            m.id === data.id
+              ? { ...m, ciphertext: data.ciphertext, nonce: data.nonce, body: newBody, editedAt: data.editedAt, failed }
+              : m
+          ),
+        };
+      });
+    };
+    s.on('dm:message:edited', onDmMessageEdited);
 
     // ── DM call signaling ──────────────────────────────────────────────────
     const onDmCallIncoming = (data: { dmChannelId: string; callerUserId: string; callerName: string; callerAvatarUrl: string | null; hasVideo: boolean }) => {
@@ -1281,6 +1323,7 @@ export default function App() {
       s.off('dm:typing:start', onDmTypingStart);
       s.off('dm:typing:stop', onDmTypingStop);
       s.off('dm:reaction:update', onDmReactionUpdate);
+      s.off('dm:message:edited', onDmMessageEdited);
       s.off('dm:call:incoming', onDmCallIncoming);
       s.off('dm:call:accepted', onDmCallAccepted);
       s.off('dm:call:rejected', onDmCallRejected);
@@ -1942,8 +1985,9 @@ export default function App() {
     throw new Error('decrypt failed with all available keys');
   }
 
-  /** Decrypt a batch of DM wire messages for a channel. */
-  async function decryptDmMessages(wire: DmWireMessage[], dmChannel: DmChannel): Promise<DmMessage[]> {
+  /** Decrypt a batch of DM wire messages for a channel.
+   *  @param existingMsgs — already-decoded messages in the channel (used for reply lookups). */
+  async function decryptDmMessages(wire: DmWireMessage[], dmChannel: DmChannel, existingMsgs?: DmMessage[]): Promise<DmMessage[]> {
     const result: DmMessage[] = [];
     for (const m of wire) {
       if (m.ciphertext && m.nonce) {
@@ -1958,7 +2002,20 @@ export default function App() {
         result.push({ ...m, body: m.body ?? '', failed: false });
       }
     }
-    return result;
+    // Attach decodedReply — look up within decoded batch first, then caller-supplied existing msgs
+    const pool = new Map<string, DmMessage>();
+    for (const m of existingMsgs ?? []) pool.set(m.id, m);
+    for (const m of result) pool.set(m.id, m);
+    return result.map((m) => {
+      if (!m.replyToId) return m;
+      const target = pool.get(m.replyToId);
+      if (!target) return { ...m, decodedReply: null };
+      const senderName = target.senderId === dmChannel.otherUserId ? dmChannel.otherDisplayName : (user?.displayName ?? 'You');
+      return {
+        ...m,
+        decodedReply: { id: target.id, senderId: target.senderId, senderName, body: target.body, failed: target.failed },
+      };
+    });
   }
 
   async function openDm(userId: string) {
@@ -2055,8 +2112,9 @@ export default function App() {
     const cursor = `${oldest.createdAt},${oldest.id}`;
     const { messages } = await api.getDmMessages(dmId, MSG_PAGE, cursor);
     const dmChannel = dmsRef.current.find((d) => d.id === dmId);
+    const currentMsgs = dmMessagesRef.current[dmId] ?? [];
     const decoded = dmChannel
-      ? await decryptDmMessages(messages as DmWireMessage[], dmChannel)
+      ? await decryptDmMessages(messages as DmWireMessage[], dmChannel, currentMsgs)
       : (messages as DmWireMessage[]).map((m) => ({ ...m, body: m.body ?? '', failed: false }));
     setDmMessages((prev) => {
       const existing = prev[dmId] ?? [];
@@ -2322,24 +2380,33 @@ export default function App() {
     socketRef.current?.emit('dm:typing:start', dmChannelId);
   }
 
-  async function sendDmMessage(dmId: string, text: string, file?: { fileUrl: string; fileName: string; fileSize: number; fileType: string }) {
+  async function sendDmMessage(dmId: string, text: string, file?: { fileUrl: string; fileName: string; fileSize: number; fileType: string }, replyToId?: string | null) {
     const dmChannel = dmsRef.current.find((d) => d.id === dmId);
     const key = dmChannel ? await getDmKey(dmChannel) : null;
     const fileFields = file ? { fileUrl: file.fileUrl, fileName: file.fileName, fileSize: file.fileSize, fileType: file.fileType } : {};
+    const replyField = replyToId ? { replyToId } : {};
     if (text.trim()) {
       if (key) {
         const { ciphertext, nonce } = await encryptText(key, text);
-        await api.sendDmMessage(dmId, { ciphertext, nonce, ...fileFields });
+        await api.sendDmMessage(dmId, { ciphertext, nonce, ...fileFields, ...replyField });
       } else {
         console.error('[sendDmMessage] no DM key available — refusing to send plaintext');
         throw new Error('Unable to encrypt message — DM key not available. Try reloading.');
       }
     } else if (file) {
       // File-only message — no text body
-      await api.sendDmMessage(dmId, fileFields as any);
+      await api.sendDmMessage(dmId, { ...fileFields, ...replyField } as any);
     }
     // Stop typing indicator when message is sent
     socketRef.current?.emit('dm:typing:stop', dmId);
+  }
+
+  async function editDmMessage(dmId: string, msgId: string, newText: string) {
+    const dmChannel = dmsRef.current.find((d) => d.id === dmId);
+    const key = dmChannel ? await getDmKey(dmChannel) : null;
+    if (!key) throw new Error('DM key not available — cannot edit message');
+    const { ciphertext, nonce } = await encryptText(key, newText);
+    await api.editDmMessage(dmId, msgId, { ciphertext, nonce });
   }
 
   async function deleteDmMessage(dmId: string, msgId: string) {
@@ -2470,35 +2537,127 @@ export default function App() {
    * Priority: (1) existing IndexedDB key → (2) server backup → (3) generate fresh.
    * When a key already exists locally, uploads a backup if the server has none yet.
    */
+  /** Compare two exported public key JWK strings by their elliptic curve point (x, y, crv).
+   *  Safer than string equality — avoids false-mismatches from JSON field ordering. */
+  function jwkPointMatches(a: string | null, b: string | null): boolean {
+    if (!a || !b) return false;
+    try {
+      const ja = JSON.parse(a);
+      const jb = JSON.parse(b);
+      return ja.x === jb.x && ja.y === jb.y && ja.crv === jb.crv;
+    } catch { return false; }
+  }
+
   async function setupDmKeys(password: string): Promise<void> {
     // authKdfSalt is included in the /api/auth/me response for v2 users.
-    // Passing it to getDmKeyBackup ensures the derived key is sent instead of the raw password.
     const authKdfSalt = user?.authKdfSalt ?? null;
+
+    // STEP 1: Fetch what the server currently has registered as our public key.
+    // By comparing first we avoid blindly attempting a PUT that would 400 — eliminating
+    // the persistent 400 loop that appears in the network tab on every page refresh.
+    let serverKeyJwk: string | null = null;
+    try {
+      const { publicKey } = await api.getMyPublicKey();
+      serverKeyJwk = publicKey;
+    } catch { /* non-fatal — treat as unknown server state, proceed normally */ }
+
     let pair = await loadDmKeyPair();
 
     if (pair) {
-      dmKeyPairRef.current = pair;
-      setDmKeysReady(true);
-      setDmMsgLoaded({});
-      const pubJwk = await exportPublicKeyJwk(pair.publicKey);
-      await api.registerPublicKey(pubJwk).catch(() => {});
-      // Upload backup if the server doesn't have one yet
-      if (password) {
-        try {
-          const { backup } = await api.getDmKeyBackup(password, authKdfSalt);
-          if (!backup) {
+      const localJwk = await exportPublicKeyJwk(pair.publicKey);
+
+      // ── Case 1: keys match ────────────────────────────────────────────────
+      if (jwkPointMatches(localJwk, serverKeyJwk)) {
+        setDmKeyMismatch(false);
+        dmKeyPairRef.current = pair;
+        setDmKeysReady(true);
+        setDmMsgLoaded({});
+        // Opportunistically upload a backup if the server doesn't have one yet
+        if (password) {
+          try {
+            const { backup } = await api.getDmKeyBackup(password, authKdfSalt);
+            if (!backup) {
+              const privJwk = await exportPrivateKeyJwk(pair.privateKey);
+              if (privJwk) {
+                const blob = await encryptDmKeyBackup(privJwk, password);
+                await api.putDmKeyBackup(blob);
+              }
+            }
+          } catch { /* non-fatal */ }
+        }
+        return;
+      }
+
+      // ── Case 2: server has no key yet — first-time registration ──────────
+      if (serverKeyJwk === null) {
+        await api.registerPublicKey(localJwk).catch(() => {});
+        setDmKeyMismatch(false);
+        dmKeyPairRef.current = pair;
+        setDmKeysReady(true);
+        setDmMsgLoaded({});
+        if (password) {
+          try {
             const privJwk = await exportPrivateKeyJwk(pair.privateKey);
             if (privJwk) {
               const blob = await encryptDmKeyBackup(privJwk, password);
               await api.putDmKeyBackup(blob);
             }
+          } catch { /* non-fatal */ }
+        }
+        return;
+      }
+
+      // ── Case 3: genuine mismatch (e.g. key rotated on another device) ────
+      if (password) {
+        // Priority 1: restore from backup — it should hold the key the server knows.
+        let restored: CryptoKeyPair | null = null;
+        try {
+          const { backup } = await api.getDmKeyBackup(password, authKdfSalt);
+          if (backup) restored = await decryptDmKeyBackup(backup, password);
+        } catch { /* non-fatal */ }
+
+        if (restored) {
+          const restoredJwk = await exportPublicKeyJwk(restored.publicKey);
+          await saveDmKeyPair(restored);
+          pair = restored;
+          // If the restored key already matches the server key, no re-registration needed.
+          if (!jwkPointMatches(restoredJwk, serverKeyJwk)) {
+            await api.registerPublicKey(restoredJwk, password).catch(() => {});
+          }
+          dmKeyPairRef.current = pair;
+          setDmKeyMismatch(false);
+          setDmKeysReady(true);
+          setDmMsgLoaded({});
+          return;
+        }
+
+        // Priority 2: force-register local key with password + upload fresh backup.
+        await api.registerPublicKey(localJwk, password).catch(() => {});
+        dmKeyPairRef.current = pair;
+        setDmKeyMismatch(false);
+        setDmKeysReady(true);
+        setDmMsgLoaded({});
+        try {
+          const privJwk = await exportPrivateKeyJwk(pair.privateKey);
+          if (privJwk) {
+            const blob = await encryptDmKeyBackup(privJwk, password);
+            await api.putDmKeyBackup(blob);
           }
         } catch { /* non-fatal */ }
+        return;
       }
+
+      // Mismatch + no password (page refresh) — can't reconcile without credentials.
+      // Use local key anyway; show a banner telling the user to log out → log in.
+      setDmKeyMismatch(true);
+      dmKeyPairRef.current = pair;
+      setDmKeysReady(true);
+      setDmMsgLoaded({});
       return;
     }
 
-    // No local key — try restoring from server backup
+    // ── No local key at all ───────────────────────────────────────────────────
+    // Try restoring from server backup (requires login password).
     if (password) {
       try {
         const { backup } = await api.getDmKeyBackup(password, authKdfSalt);
@@ -2507,24 +2666,39 @@ export default function App() {
           if (restored) {
             await saveDmKeyPair(restored);
             dmKeyPairRef.current = restored;
+            setDmKeyMismatch(false);
             setDmKeysReady(true);
             setDmMsgLoaded({});
-            const pubJwk = await exportPublicKeyJwk(restored.publicKey);
-            await api.registerPublicKey(pubJwk).catch(() => {});
+            const restoredJwk = await exportPublicKeyJwk(restored.publicKey);
+            if (!jwkPointMatches(restoredJwk, serverKeyJwk)) {
+              await api.registerPublicKey(restoredJwk).catch(() => {});
+            }
             return;
           }
         }
       } catch { /* non-fatal — fall through to generate */ }
     }
 
-    // Generate a fresh key pair
+    // Generate a fresh key pair — either first-ever login or no backup available.
     pair = await generateDmKeyPair();
     await saveDmKeyPair(pair);
     dmKeyPairRef.current = pair;
-    setDmKeysReady(true);
     setDmMsgLoaded({});
-    const pubJwk = await exportPublicKeyJwk(pair.publicKey);
-    await api.registerPublicKey(pubJwk).catch(() => {});
+    const freshJwk = await exportPublicKeyJwk(pair.publicKey);
+    if (serverKeyJwk === null) {
+      // Server has no key — register freely (no password needed).
+      await api.registerPublicKey(freshJwk).catch(() => {});
+      setDmKeyMismatch(false);
+    } else if (password) {
+      // Server has a different key — override with password.
+      await api.registerPublicKey(freshJwk, password).catch(() => {});
+      setDmKeyMismatch(false);
+    } else {
+      // Server has a key we can't override without credentials.
+      // Flag mismatch — user needs to log in once to reconcile.
+      setDmKeyMismatch(true);
+    }
+    setDmKeysReady(true);
     if (password) {
       try {
         const privJwk = await exportPrivateKeyJwk(pair.privateKey);
@@ -2694,14 +2868,28 @@ export default function App() {
             </div>
           </div>
 
+          {dmKeyMismatch && (
+            <div className="mx-4 mt-3 mb-0 flex items-start gap-2 bg-amber-500/10 border border-amber-500/25 rounded-xl px-4 py-2.5 text-[12px] text-amber-300 shrink-0">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 mt-0.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <span>
+                Your DM encryption keys are out of sync with the server — messages may not decrypt correctly.{' '}
+                <strong>Log out and log back in</strong> to restore end-to-end encryption.
+              </span>
+              <button onClick={() => setDmKeyMismatch(false)} className="ml-auto shrink-0 text-amber-400/60 hover:text-amber-300 transition-colors">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="11" y2="11"/><line x1="11" y1="1" x2="1" y2="11"/></svg>
+              </button>
+            </div>
+          )}
+
           {activeDm ? (
             <DmView
               dm={activeDm}
               messages={dmMessages[activeDm.id] ?? []}
               me={user}
               online={online}
-              onSend={(text, file) => sendDmMessage(activeDm.id, text, file)}
+              onSend={(text, file, replyToId) => sendDmMessage(activeDm.id, text, file, replyToId)}
               onDelete={(msgId) => deleteDmMessage(activeDm.id, msgId)}
+              onEdit={(msgId, newText) => editDmMessage(activeDm.id, msgId, newText)}
               onClearChat={() => clearDmChat(activeDm.id)}
               onReact={(dmMessageId, emoji) => handleDmReact(dmMessageId, activeDm.id, emoji)}
               onTyping={() => handleDmTyping(activeDm.id)}

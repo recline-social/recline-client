@@ -169,6 +169,15 @@ export type DmChannel = {
   lastMessageAt: number | null;
 };
 
+/** Decoded reply preview for a DM message — populated client-side from local state. */
+export type DmReplyPreview = {
+  id: string;
+  senderId: string;
+  senderName: string;
+  body: string;
+  failed?: boolean;
+};
+
 /** Wire format from the server — may be E2E encrypted or legacy plaintext. */
 export type DmWireMessage = {
   id: string;
@@ -187,6 +196,9 @@ export type DmWireMessage = {
    */
   senderEcdhPublicKey?: string | null;
   createdAt: number;
+  editedAt?: number | null;
+  /** ID of the message being replied to, if this is a reply. */
+  replyToId?: string | null;
   /** File attachment fields — not E2E encrypted (same limitation as channel attachments). */
   fileUrl?: string | null;
   fileName?: string | null;
@@ -202,6 +214,8 @@ export type DmMessage = DmWireMessage & {
   failed?: boolean;
   /** Emoji reactions on this message. */
   reactions?: DmReaction[];
+  /** Reply preview — populated client-side by looking up the replied-to message in local state. */
+  decodedReply?: DmReplyPreview | null;
 };
 
 export type DmReaction = {
