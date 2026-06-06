@@ -393,6 +393,10 @@ export default function App() {
   // Fresh DM list accessible in socket callbacks without stale-closure issues
   const dmsRef = useRef(dms);
   useEffect(() => { dmsRef.current = dms; }, [dms]);
+  // Fresh dmMessages map — keeps M-8 re-decrypt effect and other callbacks
+  // from reading stale closure values (same pattern as dmsRef).
+  const dmMessagesRef = useRef(dmMessages);
+  useEffect(() => { dmMessagesRef.current = dmMessages; }, [dmMessages]);
 
   const socketRef = useRef<Socket | null>(null);
   // Guard against concurrent unlock attempts (user double-clicking the unlock button)
@@ -1471,16 +1475,14 @@ export default function App() {
   /* ------------------------ Re-decrypt failed DMs when keys become available ------------------------ */
   useEffect(() => {
     if (!dmKeysReady) return;
-    // Clear loaded state for any DM channel with failed messages so they get re-fetched and re-decrypted
-    setDmMessages((prev) => {
-      const hasFailed = Object.values(prev).some((msgs) => msgs.some((m) => m.failed));
-      if (!hasFailed) return prev;
-      return prev; // return same ref — setDmMsgLoaded below triggers re-load
-    });
+    // Clear loaded state for any DM channel with failed messages so they get re-fetched and re-decrypted.
+    // Use dmMessagesRef.current so we always read the latest state, not the stale closure value that
+    // was captured when dmKeysReady first became true (the ref is kept in sync via its own useEffect).
     setDmMsgLoaded((prev) => {
+      const current = dmMessagesRef.current;
       const updated = { ...prev };
       let changed = false;
-      for (const [chanId, msgs] of Object.entries(dmMessages)) {
+      for (const [chanId, msgs] of Object.entries(current)) {
         if (msgs.some((m) => m.failed) && updated[chanId]) {
           delete updated[chanId];
           changed = true;
