@@ -2,6 +2,11 @@ import { getServerUrl } from './serverUrl';
 
 const TOKEN_KEY = 'recline.token';
 
+let _onUnauthorized: (() => void) | null = null;
+export function setUnauthorizedHandler(cb: () => void): void {
+  _onUnauthorized = cb;
+}
+
 // Token storage strategy:
 //   sessionStorage  — default. Clears when the tab/window is closed (or the
 //                     Tauri app exits). Safe from disk-based extraction and
@@ -38,6 +43,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
   if (!res.ok) {
+    if (
+      res.status === 401 &&
+      !url.includes('/api/auth/login') &&
+      !url.includes('/api/auth/signup') &&
+      !url.includes('/api/auth/reset')
+    ) {
+      _onUnauthorized?.();
+    }
     const err = new Error(data?.error ?? `HTTP ${res.status}`);
     (err as Error & { status?: number }).status = res.status;
     throw err;

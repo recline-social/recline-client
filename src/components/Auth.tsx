@@ -444,6 +444,7 @@ export function Auth({ onAuthed }: Props) {
         } else {
           setToken(r.token, remember);
           onAuthed(r.user, password);
+          setPassword('');
         }
       }
     } catch (err: any) {
@@ -464,6 +465,7 @@ export function Auth({ onAuthed }: Props) {
           onDone={() => {
             setToken(pendingSessionToken, remember);
             onAuthed(pendingUser, password);
+            setPassword('');
           }}
         />
       </div>
@@ -478,6 +480,7 @@ export function Auth({ onAuthed }: Props) {
           onSuccess={(token, user) => {
             setToken(token, remember);
             onAuthed(user, password);
+            setPassword('');
           }}
           onBack={() => {
             setScreen('main');

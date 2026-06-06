@@ -19,7 +19,7 @@ import { DmCallWindow } from './components/DmCallWindow';
 import type { DmCallState } from './types';
 import { ServerHome } from './components/ServerHome';
 import { getServerUrl } from './lib/serverUrl';
-import { api, getToken, setToken } from './lib/api';
+import { api, getToken, setToken, setUnauthorizedHandler } from './lib/api';
 import { connectSocket, disconnectSocket } from './lib/socket';
 import {
   cacheKey,
@@ -260,8 +260,12 @@ export default function App() {
   const [unlockTarget, setUnlockTarget] = useState<string | null>(null);
 
   // Panel resize widths — persisted to localStorage
-  const [channelListWidth, setChannelListWidth] = useState(() => Number(localStorage.getItem('clw') || 220));
-  const [memberListWidth, setMemberListWidth]   = useState(() => Number(localStorage.getItem('mlw') || 220));
+  const clampPanel = (v: number, fallback: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 160 && n <= 400 ? n : fallback;
+  };
+  const [channelListWidth, setChannelListWidth] = useState(() => clampPanel(Number(localStorage.getItem('clw')), 220));
+  const [memberListWidth, setMemberListWidth]   = useState(() => clampPanel(Number(localStorage.getItem('mlw')), 240));
 
   function startPanelResize(e: { clientX: number; preventDefault: () => void }, panel: 'channel' | 'member') {
     e.preventDefault();
@@ -324,6 +328,9 @@ export default function App() {
   const [dmCall, setDmCall] = useState<DmCallState | null>(null);
   const dmCallRef = useRef<DmCallState | null>(null);
   dmCallRef.current = dmCall;
+  const dmCallAutoCancelRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dmCallDisconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dmListRefreshingRef = useRef(false);
   // DM typing: dmChannelId → true if other person is currently typing
   const [dmTyping, setDmTyping] = useState<Record<string, boolean>>({});
   const dmTypingTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -397,6 +404,8 @@ export default function App() {
 
   // refs so socket handlers always see fresh state (avoids stale closures
   // because the handlers are bound once when the socket connects).
+  const userRef = useRef(user);
+  useEffect(() => { userRef.current = user; }, [user]);
   const channelsByServerRef = useRef(channelsByServer);
   useEffect(() => {
     channelsByServerRef.current = channelsByServer;
@@ -449,6 +458,13 @@ export default function App() {
     };
     document.addEventListener('visibilitychange', handler);
     return () => document.removeEventListener('visibilitychange', handler);
+  }, []);
+
+  // Wire 401 → auto-logout so expired/revoked sessions are handled for all API calls (M-2)
+  useEffect(() => {
+    setUnauthorizedHandler(() => logout());
+    return () => setUnauthorizedHandler(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // "Get more Sparks" link from the spark picker opens ProfileDialog on sparks tab
@@ -631,14 +647,14 @@ export default function App() {
           return 'Someone';
         })();
         const channelName = lookupChannel(msg.channelId)?.name ?? 'unknown';
-        const isMention = !failed && body.includes(`@${user.displayName}`);
+        const isMention = !failed && body.includes(`@${userRef.current?.displayName ?? user.displayName}`);
 
         if (!isFocused || isMention) {
           showNotification(
             isMention
               ? `Mentioned in #${channelName}`
               : `${senderName} in #${channelName}`,
-            key ? body : 'New encrypted message',
+            `New message in #${channelName}`,
             {
               tag: msg.channelId,
             },
@@ -847,11 +863,8 @@ export default function App() {
           },
         };
       });
-      // Decrement unread when a message that was unread gets deleted (#25)
-      setUnread((prev) => {
-        const cur = prev[data.channelId] ?? 0;
-        return cur > 0 ? { ...prev, [data.channelId]: cur - 1 } : prev;
-      });
+      // Do NOT decrement unread on delete — we can't tell if the deleted message
+      // was read or unread, and under-counting is more harmful than over-counting.
     };
 
     // Server renamed
@@ -889,13 +902,21 @@ export default function App() {
       // loaded yet). Refresh the full DM list so the conversation appears in the sidebar
       // and we have the otherPublicKey needed to decrypt the message.
       if (!dmChannel) {
-        try {
-          const { dms: fresh } = await api.listDms();
-          // Sync ref immediately so we can decrypt in this callback without waiting for a re-render.
-          dmsRef.current = fresh;
-          setDms(fresh);
-          dmChannel = fresh.find((d) => d.id === wire.dmChannelId);
-        } catch { /* non-fatal — fall back to empty body below */ }
+        if (!dmListRefreshingRef.current) {
+          dmListRefreshingRef.current = true;
+          try {
+            const { dms: fresh } = await api.listDms();
+            // Sync ref immediately so we can decrypt in this callback without waiting for a re-render.
+            dmsRef.current = fresh;
+            setDms(fresh);
+            dmChannel = fresh.find((d) => d.id === wire.dmChannelId);
+          } catch { /* non-fatal — fall back to empty body below */ }
+          finally { dmListRefreshingRef.current = false; }
+        } else {
+          // Another refresh is in flight — wait a moment then check dmsRef
+          await new Promise((r) => setTimeout(r, 300));
+          dmChannel = dmsRef.current.find((d) => d.id === wire.dmChannelId);
+        }
       }
 
       // Decrypt — tryDecryptDm falls back through archived historical keys on failure
@@ -928,7 +949,7 @@ export default function App() {
           // Desktop notification
           showNotification(
             `New message from ${dmChannel?.otherDisplayName ?? 'Someone'}`,
-            decoded.failed ? 'New encrypted message' : (decoded.body || 'New message'),
+            'New message',
             { tag: `dm:${decoded.dmChannelId}` },
           );
         }
@@ -1125,6 +1146,12 @@ export default function App() {
       if (call.status !== 'connecting' && call.status !== 'active') return;
       const pc = call.pc;
       await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      // Drain pending ICE candidates
+      const pending: RTCIceCandidateInit[] = (call as any)._pendingCandidates ?? [];
+      (call as any)._pendingCandidates = [];
+      for (const c of pending) {
+        try { await pc.addIceCandidate(c); } catch { /* non-fatal */ }
+      }
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       s.emit('dm:call:answer', { dmChannelId: data.dmChannelId, sdp: pc.localDescription! });
@@ -1134,12 +1161,25 @@ export default function App() {
       const call = dmCallRef.current;
       if (!call || call.dmChannelId !== data.dmChannelId || !call.pc) return;
       await call.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      // Drain pending ICE candidates
+      const pending: RTCIceCandidateInit[] = (call as any)._pendingCandidates ?? [];
+      (call as any)._pendingCandidates = [];
+      for (const c of pending) {
+        try { await call.pc.addIceCandidate(c); } catch { /* non-fatal */ }
+      }
     };
 
     const onDmCallIce = async (data: { dmChannelId: string; candidate: RTCIceCandidateInit }) => {
       const call = dmCallRef.current;
-      if (!call || call.dmChannelId !== data.dmChannelId || !call.pc) return;
-      try { await call.pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch {}
+      if (!call || call.dmChannelId !== data.dmChannelId) return;
+      try {
+        if (call.pc?.remoteDescription) {
+          await call.pc.addIceCandidate(data.candidate);
+        } else if (call.pc) {
+          // Queue until remote description is set
+          (call as any)._pendingCandidates = [...((call as any)._pendingCandidates ?? []), data.candidate];
+        }
+      } catch { /* non-fatal */ }
     };
 
     s.on('dm:call:incoming', onDmCallIncoming);
@@ -1183,7 +1223,7 @@ export default function App() {
     const onServerBroadcast = (payload: BroadcastPayload) => {
       // Only show if we are currently viewing this server
       // The server already filters by socketFocus, but guard here for safety
-      setBroadcastQueue((prev) => [...prev, payload]);
+      setBroadcastQueue((prev) => [...prev, payload].slice(-10));
     };
 
     s.on('role:created', onRoleCreated);
@@ -1428,6 +1468,29 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDmId, dmKeysReady]);
 
+  /* ------------------------ Re-decrypt failed DMs when keys become available ------------------------ */
+  useEffect(() => {
+    if (!dmKeysReady) return;
+    // Clear loaded state for any DM channel with failed messages so they get re-fetched and re-decrypted
+    setDmMessages((prev) => {
+      const hasFailed = Object.values(prev).some((msgs) => msgs.some((m) => m.failed));
+      if (!hasFailed) return prev;
+      return prev; // return same ref — setDmMsgLoaded below triggers re-load
+    });
+    setDmMsgLoaded((prev) => {
+      const updated = { ...prev };
+      let changed = false;
+      for (const [chanId, msgs] of Object.entries(dmMessages)) {
+        if (msgs.some((m) => m.failed) && updated[chanId]) {
+          delete updated[chanId];
+          changed = true;
+        }
+      }
+      return changed ? updated : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dmKeysReady]);
+
   /* ------------------------ Helpers ------------------------ */
   const memberMap = useMemo(() => {
     const map: Record<string, Member> = {};
@@ -1547,7 +1610,10 @@ export default function App() {
   ) {
     if (!activeServerId || !activeChannelId) return;
     if (text.length > 4000) throw new Error('Message too long (max 4000 characters)');
-    const key = getCachedKey(activeServerId);
+    // Snapshot mutable state before the first await to avoid TOCTOU races
+    const channelId = activeChannelId;
+    const serverId = activeServerId;
+    const key = getCachedKey(serverId);
     const socket = socketRef.current;
     if (!key || !socket) return;
     const { ciphertext, nonce } = await encryptText(key, text);
@@ -1555,7 +1621,7 @@ export default function App() {
       socket.emit(
         'message:send',
         {
-          channelId: activeChannelId, ciphertext, nonce,
+          channelId, ciphertext, nonce,
           replyToId: replyToId ?? null, animationType: animationType ?? null,
           fileUrl:  attachment?.url  ?? null,
           fileName: attachment?.name ?? null,
@@ -2002,6 +2068,8 @@ export default function App() {
   // ── DM Call management ────────────────────────────────────────────────────
 
   function teardownDmCall() {
+    if (dmCallAutoCancelRef.current) { clearTimeout(dmCallAutoCancelRef.current); dmCallAutoCancelRef.current = null; }
+    if (dmCallDisconnectTimerRef.current) { clearTimeout(dmCallDisconnectTimerRef.current); dmCallDisconnectTimerRef.current = null; }
     setDmCall((prev) => {
       if (!prev) return null;
       prev.pc?.close();
@@ -2026,7 +2094,7 @@ export default function App() {
       console.error('[DM call] getUserMedia failed:', err);
       return;
     }
-    setDmCall({
+    const callState: DmCallState = {
       dmChannelId: dmId,
       peerUserId: dm.otherUserId,
       peerName: dm.otherDisplayName,
@@ -2043,15 +2111,19 @@ export default function App() {
       pc: null,
       startedAt: null,
       peerVolume: 1,
-    });
+    };
+    // Store in ref synchronously so teardown can find the stream even before setDmCall processes
+    dmCallRef.current = callState;
+    setDmCall(callState);
     playCallSound('join_call');
     socketRef.current?.emit('dm:call:invite', { dmChannelId: dmId, hasVideo });
     // Auto-cancel after 45s if no answer
-    setTimeout(() => {
+    dmCallAutoCancelRef.current = setTimeout(() => {
       if (dmCallRef.current?.dmChannelId === dmId && dmCallRef.current?.status === 'outgoing-ringing') {
         socketRef.current?.emit('dm:call:end', { dmChannelId: dmId });
         teardownDmCall();
       }
+      dmCallAutoCancelRef.current = null;
     }, 45_000);
   }
 
@@ -2143,10 +2215,23 @@ export default function App() {
     };
 
     pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      const state = pc.iceConnectionState;
+      if (state === 'connected' || state === 'completed') {
         setDmCall((prev) => prev ? { ...prev, status: 'active', startedAt: Date.now() } : prev);
+        if (dmCallDisconnectTimerRef.current) { clearTimeout(dmCallDisconnectTimerRef.current); dmCallDisconnectTimerRef.current = null; }
+      } else if (state === 'failed') {
+        if (dmCallDisconnectTimerRef.current) clearTimeout(dmCallDisconnectTimerRef.current);
+        teardownDmCall();
+      } else if (state === 'disconnected') {
+        dmCallDisconnectTimerRef.current = setTimeout(() => {
+          // Only tear down if still disconnected (not recovered to connected/completed)
+          const currentState = dmCallRef.current?.pc?.iceConnectionState;
+          if (currentState === 'disconnected' || currentState === 'failed') {
+            teardownDmCall();
+          }
+          dmCallDisconnectTimerRef.current = null;
+        }, 8_000);
       }
-      if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') teardownDmCall();
     };
     return pc;
   }
@@ -2244,7 +2329,8 @@ export default function App() {
         const { ciphertext, nonce } = await encryptText(key, text);
         await api.sendDmMessage(dmId, { ciphertext, nonce, ...fileFields });
       } else {
-        await api.sendDmMessage(dmId, { body: text, ...fileFields });
+        console.error('[sendDmMessage] no DM key available — refusing to send plaintext');
+        throw new Error('Unable to encrypt message — DM key not available. Try reloading.');
       }
     } else if (file) {
       // File-only message — no text body
@@ -2340,6 +2426,8 @@ export default function App() {
     clearAllKeys(); // wipe memory cache + sessionStorage in one shot (#32)
     clearAllDmKeys(); // flush DM AES keys from memory + sessionStorage
     dmKeyPairRef.current = null;
+    if (dmCallAutoCancelRef.current) { clearTimeout(dmCallAutoCancelRef.current); dmCallAutoCancelRef.current = null; }
+    if (dmCallDisconnectTimerRef.current) { clearTimeout(dmCallDisconnectTimerRef.current); dmCallDisconnectTimerRef.current = null; }
     setUser(null);
     setServers([]);
     setActiveServerId(null);
@@ -2349,6 +2437,8 @@ export default function App() {
     setRolesByServer({});
     setChannelMsgs({});
     setKeysReady({});
+    setOnline(new Set());
+    setTyping({});
     setInCall(false);
     setMicOn(true);
     setDeafOn(false);
@@ -2361,6 +2451,14 @@ export default function App() {
     setDmUnreadMap({});
     setView('server');
     setFriends([]);
+    setSparksBalance(0);
+    setIsSupporter(false);
+    setShowSupporterToast(false);
+    setBroadcastQueue([]);
+    setStreakInfo(null);
+    setStreakToast(null);
+    setProfileCardUserId(null);
+    pendingSupporterCheckRef.current = false;
     callManagerRef.current?.leave();
     disconnectSocket();
   }

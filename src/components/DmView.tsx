@@ -376,6 +376,14 @@ export function DmView({
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    const MAX_FILE_BYTES = 200 * 1024 * 1024; // 200 MB
+    if (file.size > MAX_FILE_BYTES) {
+      setSendError('File too large (max 200 MB)');
+      if (e.target) e.target.value = '';
+      return;
+    }
+
     setUploading(true);
     setUploadProgress(0);
     try {
