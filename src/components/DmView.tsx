@@ -338,6 +338,9 @@ function DmMessageRow({ msg, dm, me, showHeader, onReact, onReply, onEdit, onDel
             {msg.editedAt && !msg.failed && (
               <span className="text-[10px] text-ink-400/70 ml-1.5 select-none">(edited)</span>
             )}
+            {msg.isPlaintext && !msg.failed && (
+              <span className="text-[10px] text-amber-400/70 ml-1" title="This message was not end-to-end encrypted">⚠ unencrypted</span>
+            )}
           </div>
         )}
 

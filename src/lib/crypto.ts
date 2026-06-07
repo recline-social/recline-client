@@ -220,12 +220,12 @@ export async function exportPrivateKeyJwk(privateKey: CryptoKey): Promise<JsonWe
   }
 }
 
-/** Derive an AES-GCM-256 key from a password + random salt (PBKDF2 / 200k / SHA-256). */
-async function deriveBackupKey(password: string, salt: Uint8Array<ArrayBuffer>): Promise<CryptoKey> {
+/** Derive an AES-GCM-256 key from a password + random salt (PBKDF2 / SHA-256). */
+async function deriveBackupKey(password: string, salt: Uint8Array<ArrayBuffer>, iterations = 600_000): Promise<CryptoKey> {
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt, iterations: 200_000, hash: 'SHA-256' },
+    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
     false,
@@ -257,7 +257,7 @@ export async function encryptDmKeyBackup(privJwk: JsonWebKey, password: string):
     key,
     new TextEncoder().encode(JSON.stringify(privJwk)),
   );
-  return JSON.stringify({ v: 1, salt: b64(salt), iv: b64(iv), ct: b64(ct) });
+  return JSON.stringify({ v: 2, salt: b64(salt), iv: b64(iv), ct: b64(ct) });
 }
 
 /**
@@ -267,8 +267,10 @@ export async function encryptDmKeyBackup(privJwk: JsonWebKey, password: string):
 export async function decryptDmKeyBackup(blob: string, password: string): Promise<CryptoKeyPair | null> {
   try {
     const { v, salt, iv, ct } = JSON.parse(blob) as { v: number; salt: string; iv: string; ct: string };
-    if (v !== 1) return null;
-    const key      = await deriveBackupKey(password, unb64(salt));
+    if (v !== 1 && v !== 2) return null;
+    // v1 backups used 200k iterations; v2 uses 600k. Pass explicit count for v1 compatibility.
+    const iters    = v === 1 ? 200_000 : 600_000;
+    const key      = await deriveBackupKey(password, unb64(salt), iters);
     const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv) }, key, unb64(ct));
     const privJwk  = JSON.parse(new TextDecoder().decode(plainBuf)) as JsonWebKey;
     // Reconstruct the public key from the private JWK — P-256 JWKs carry x and y.

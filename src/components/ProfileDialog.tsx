@@ -432,7 +432,7 @@ function ProfileTab({
       const r = await api.updateMe({ displayName: trimmed });
       onUpdated(r.user as User);
       setSaved(true);
-      setTimeout(() => onClose(), 600);
+      setTimeout(() => setSaved(false), 2000);
     } catch (err: any) {
       setError(err?.message ?? 'Could not save');
     } finally {
@@ -533,9 +533,12 @@ function ProfileTab({
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" className="btn-ghost" onClick={onClose}>Close</button>
           <button type="submit" className="btn-primary" disabled={loading}>
-            {loading ? 'Saving…' : saved ? 'Saved' : 'Save'}
+            {loading ? 'Saving…' : 'Save'}
           </button>
         </div>
+        {saved && (
+          <p className="text-[12px] text-emerald-400 text-right transition-opacity">Saved ✓</p>
+        )}
       </form>
     </div>
   );
@@ -897,12 +900,16 @@ function SecurityTab({
             </div>
           </div>
         </div>
-        <button
-          onClick={() => setPanel('regen-codes')}
-          className="w-full text-xs text-ink-300 hover:text-ink-100 border border-white/10 hover:border-white/20 rounded-xl py-2 transition-colors"
-        >
-          Regenerate backup codes
-        </button>
+        {totpEnabled ? (
+          <button
+            onClick={() => setPanel('regen-codes')}
+            className="w-full text-xs text-ink-300 hover:text-ink-100 border border-white/10 hover:border-white/20 rounded-xl py-2 transition-colors"
+          >
+            Regenerate backup codes
+          </button>
+        ) : (
+          <p className="text-[12px] text-ink-500">Enable two-factor authentication to manage backup codes.</p>
+        )}
       </SectionCard>
 
       {/* E2E encryption key section */}
@@ -936,6 +943,9 @@ function SecurityTab({
             Sync from account
           </button>
         </div>
+        <p className="text-[12px] text-amber-400/80 mt-2">
+          ⚠ Rotation protects future messages only. Past messages remain readable with your previous key.
+        </p>
       </SectionCard>
     </div>
   );
@@ -1409,7 +1419,7 @@ export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, onSyn
       subtitle="Manage your profile and security settings."
     >
       {/* Tab switcher */}
-      <div className="flex p-1 bg-ink-800/60 rounded-xl mb-4 border border-white/5">
+      <div className="flex p-1 bg-ink-800/60 rounded-xl mb-4 border border-white/5 overflow-x-auto scrollbar-none whitespace-nowrap">
         {(['profile', 'sparks', 'security', 'notifications'] as Tab[]).map((t) => (
           <button
             key={t}

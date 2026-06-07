@@ -34,4 +34,5 @@ export function connectSocket() {
 
 export function disconnectSocket() {
   if (socket && socket.connected) socket.disconnect();
+  socket = null;
 }

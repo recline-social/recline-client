@@ -205,6 +205,18 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
         .slice(0, 8)
     : [];
 
+  // Close animation picker on outside click
+  useEffect(() => {
+    if (!animPickerOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (animPickerRef.current && !animPickerRef.current.contains(e.target as Node)) {
+        setAnimPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [animPickerOpen]);
+
   // Focus the textarea when a reply is set
   useEffect(() => {
     if (replyingTo && taRef.current) taRef.current.focus();
@@ -323,6 +335,7 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
       if (e.key === 'Escape') { e.preventDefault(); setMentionQuery(null); return; }
     }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
+    if (e.key === 'Escape') setAnimPickerOpen(false);
     if (e.key === 'Escape' && replyingTo) onCancelReply?.();
   }
 

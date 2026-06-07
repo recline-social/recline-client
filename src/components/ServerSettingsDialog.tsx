@@ -3,6 +3,7 @@ import type { InviteLink, Member, ServerRole, ServerSummary, User } from '../typ
 import { api } from '../lib/api';
 import { getServerUrl } from '../lib/serverUrl';
 import { Permissions } from '../lib/permissions';
+import { Avatar } from './Avatar';
 
 type Tab = 'general' | 'security' | 'members' | 'roles' | 'bans' | 'reports' | 'invites' | 'danger';
 
@@ -346,6 +347,7 @@ export function ServerSettingsDialog({
           <button
             onClick={() => { reset(); onClose(); }}
             className="btn-ghost h-7 w-7 grid place-items-center rounded-lg"
+            aria-label="Close"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
@@ -567,9 +569,7 @@ export function ServerSettingsDialog({
                 return (
                   <div key={m.id} className="px-3 py-2 rounded-lg hover:bg-white/[0.03] group">
                     <div className="flex items-center gap-3">
-                      <div className="h-8 w-8 rounded-full bg-ink-700 grid place-items-center text-xs font-semibold text-ink-200 shrink-0">
-                        {m.displayName.slice(0, 1).toUpperCase()}
-                      </div>
+                      <Avatar name={m.displayName} id={m.id} size="sm" imageUrl={m.avatarUrl} />
                       <div className="min-w-0 flex-1">
                         <div className="text-[13px] font-medium truncate text-ink-100">
                           {m.displayName}
@@ -630,6 +630,13 @@ export function ServerSettingsDialog({
                               >
                                 Kick
                               </button>
+                              <input
+                                type="text"
+                                value={banReasonInputs[m.id] ?? ''}
+                                onChange={(e) => setBanReasonInputs((prev) => ({ ...prev, [m.id]: e.target.value }))}
+                                placeholder="Ban reason (optional)"
+                                className="text-[12px] bg-ink-800 border border-ink-600 rounded px-2 py-1 text-ink-200 w-32 mr-2"
+                              />
                               <button
                                 onClick={async () => {
                                   setBusy(true);
@@ -1014,6 +1021,13 @@ function RolesTab({
   const [newHoisted, setNewHoisted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!deleteConfirmId) return;
+    const t = setTimeout(() => setDeleteConfirmId(null), 3000);
+    return () => clearTimeout(t);
+  }, [deleteConfirmId]);
 
   // Edit state
   const [editName, setEditName] = useState('');
@@ -1082,7 +1096,11 @@ function RolesTab({
 
   async function handleDelete() {
     if (!selected || selected.isDefault) return;
-    if (!window.confirm(`Delete role "${selected.name}"? This cannot be undone.`)) return;
+    if (deleteConfirmId !== selected.id) {
+      setDeleteConfirmId(selected.id);
+      return;
+    }
+    setDeleteConfirmId(null);
     setBusy(true);
     setErr('');
     try {
@@ -1198,14 +1216,35 @@ function RolesTab({
               {busy ? 'Saving…' : 'Save changes'}
             </button>
             {!selected.isDefault && (
-              <button
-                type="button"
-                onClick={handleDelete}
-                disabled={busy}
-                className="px-4 py-2 rounded-lg text-sm font-medium bg-rose-500/15 text-rose-400 hover:bg-rose-500/25 border border-rose-500/20 transition-colors disabled:opacity-40"
-              >
-                Delete
-              </button>
+              deleteConfirmId === selected.id ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleDelete}
+                    disabled={busy}
+                    className="px-4 py-2 rounded-lg text-sm font-medium bg-rose-500/25 text-rose-300 hover:bg-rose-500/35 border border-rose-500/40 transition-colors disabled:opacity-40"
+                  >
+                    Delete
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirmId(null)}
+                    disabled={busy}
+                    className="btn-ghost text-sm px-4 py-2 disabled:opacity-40"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  disabled={busy}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-rose-500/15 text-rose-400 hover:bg-rose-500/25 border border-rose-500/20 transition-colors disabled:opacity-40"
+                >
+                  Delete
+                </button>
+              )
             )}
           </div>
         </form>
@@ -1334,6 +1373,13 @@ function InvitesTab({ server }: { server: ServerSummary }) {
   const [modeWorking, setModeWorking]   = useState(false);
   const [creating, setCreating]         = useState(false);
   const [copied, setCopied]             = useState<string | null>(null);
+  const [deleteLinkConfirmId, setDeleteLinkConfirmId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!deleteLinkConfirmId) return;
+    const t = setTimeout(() => setDeleteLinkConfirmId(null), 3000);
+    return () => clearTimeout(t);
+  }, [deleteLinkConfirmId]);
 
   // Create form state
   const [newCode, setNewCode]           = useState('');
@@ -1392,7 +1438,11 @@ function InvitesTab({ server }: { server: ServerSummary }) {
   }
 
   async function deleteLink(linkId: string) {
-    if (!confirm('Delete this invite link? It cannot be undone.')) return;
+    if (deleteLinkConfirmId !== linkId) {
+      setDeleteLinkConfirmId(linkId);
+      return;
+    }
+    setDeleteLinkConfirmId(null);
     try {
       await api.invites.delete(server.id, linkId);
       setLinks((prev) => prev.filter((l) => l.id !== linkId));
@@ -1621,16 +1671,35 @@ function InvitesTab({ server }: { server: ServerSummary }) {
                       >
                         {link.isActive ? '⏸' : '▶'}
                       </button>
-                      <button
-                        onClick={() => deleteLink(link.id)}
-                        title="Delete link"
-                        className="h-7 w-7 grid place-items-center rounded-md border border-white/[0.08] text-ink-400 hover:text-rose-300 hover:border-rose-500/30 transition-colors"
-                      >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-                          <path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
-                        </svg>
-                      </button>
+                      {deleteLinkConfirmId === link.id ? (
+                        <>
+                          <button
+                            onClick={() => deleteLink(link.id)}
+                            title="Confirm delete"
+                            className="h-7 px-2 grid place-items-center rounded-md border border-rose-500/40 text-rose-300 hover:bg-rose-500/15 transition-colors text-[10px] font-semibold"
+                          >
+                            Yes
+                          </button>
+                          <button
+                            onClick={() => setDeleteLinkConfirmId(null)}
+                            title="Cancel"
+                            className="h-7 px-2 grid place-items-center rounded-md border border-white/[0.08] text-ink-400 hover:text-ink-200 transition-colors text-[10px] font-semibold"
+                          >
+                            No
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => deleteLink(link.id)}
+                          title="Delete link"
+                          className="h-7 w-7 grid place-items-center rounded-md border border-white/[0.08] text-ink-400 hover:text-rose-300 hover:border-rose-500/30 transition-colors"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                            <path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                          </svg>
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>

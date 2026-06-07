@@ -212,6 +212,8 @@ export type DmMessage = DmWireMessage & {
   body: string;
   /** True if decryption failed or key was missing. */
   failed?: boolean;
+  /** True for legacy messages that arrived as plaintext (no ciphertext/nonce) — not E2E encrypted. */
+  isPlaintext?: boolean;
   /** Emoji reactions on this message. */
   reactions?: DmReaction[];
   /** Reply preview — populated client-side by looking up the replied-to message in local state. */

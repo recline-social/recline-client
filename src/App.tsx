@@ -413,6 +413,8 @@ export default function App() {
   const dmLoadingRef = useRef<Set<string>>(new Set());
   // tracks active typing auto-clear timers so they can be cancelled on stop/unmount
   const typingTimersRef = useRef<Map<string, number>>(new Map());
+  // Guard against concurrent createChannel calls (double-click)
+  const creatingChannelRef = useRef(false);
 
   // refs so socket handlers always see fresh state (avoids stale closures
   // because the handlers are bound once when the socket connects).
@@ -583,6 +585,8 @@ export default function App() {
       setCallPeers([]);
       setLocalStream(null);
       setLocalScreen(null);
+      setTyping({});
+      setDmTyping({});
     };
     const onReconnectAttempt = () => setConnectionState('connecting');
     // Session expired or invalid — clean up and redirect to login (#22)
@@ -644,14 +648,14 @@ export default function App() {
       // this channel (or when the window is not in focus).
       const isFocused =
         activeChannelIdRef.current === msg.channelId && document.visibilityState === 'visible';
-      if (!isFocused && msg.senderId !== user.id) {
+      if (!isFocused && msg.senderId !== userRef.current?.id) {
         setUnread((prev) => ({ ...prev, [msg.channelId]: (prev[msg.channelId] ?? 0) + 1 }));
       }
 
       // Desktop notification when tab is hidden and message is from someone else.
       // Also fires for mentions even when the tab is not the active channel (but
       // still hidden), using shouldNotify() as the final gate.
-      if (msg.senderId !== user.id && shouldNotify()) {
+      if (msg.senderId !== userRef.current?.id && shouldNotify()) {
         const senderName = (() => {
           for (const members of Object.values(membersByServerRef.current)) {
             const m = members.find((m) => m.id === msg.senderId);
@@ -660,7 +664,7 @@ export default function App() {
           return 'Someone';
         })();
         const channelName = lookupChannel(msg.channelId)?.name ?? 'unknown';
-        const isMention = !failed && body.includes(`@${userRef.current?.displayName ?? user.displayName}`);
+        const isMention = !failed && body.includes(`@${userRef.current?.displayName}`);
 
         if (!isFocused || isMention) {
           showNotification(
@@ -942,7 +946,9 @@ export default function App() {
           decoded = { ...wire, body: '[could not decrypt]', failed: true };
         }
       } else {
-        decoded = { ...wire, body: wire.body ?? '', failed: false };
+        // Legacy plaintext message or unknown channel — not E2E encrypted
+        const isLegacyPlaintext = !wire.ciphertext && wire.body != null;
+        decoded = { ...wire, body: wire.body ?? '[message from unknown conversation]', failed: !isLegacyPlaintext, isPlaintext: isLegacyPlaintext };
       }
 
       // Attach reply preview if this message is a reply
@@ -967,7 +973,7 @@ export default function App() {
         d.id === decoded.dmChannelId ? { ...d, lastMessageAt: decoded.createdAt } : d
       ));
       // Unread badge + browser notification when not focused on this DM
-      if (decoded.senderId !== user.id) {
+      if (decoded.senderId !== userRef.current?.id) {
         const isFocused = activeDmIdRef.current === decoded.dmChannelId && viewRef.current === 'dm' && document.visibilityState === 'visible';
         if (!isFocused) {
           setDmUnreadMap((prev) => ({ ...prev, [decoded.dmChannelId]: (prev[decoded.dmChannelId] ?? 0) + 1 }));
@@ -1179,6 +1185,7 @@ export default function App() {
         // Callee path: create PC with ICE servers, wait for offer from caller
         const pc = buildDmPeerConnection(data.iceServers, data.dmChannelId, call.localStream);
         setDmCall((prev) => prev ? { ...prev, pc } : prev);
+        dmCallRef.current = { ...dmCallRef.current!, pc };
       }
     };
 
@@ -1669,6 +1676,7 @@ export default function App() {
     if (!key || !socket) return;
     const { ciphertext, nonce } = await encryptText(key, text);
     return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('send timed out')), 8000);
       socket.emit(
         'message:send',
         {
@@ -1680,6 +1688,7 @@ export default function App() {
           fileType: attachment?.type ?? null,
         },
         (resp: { ok: boolean; id?: string; error?: string }) => {
+          clearTimeout(timer);
           if (!resp?.ok) reject(new Error(resp?.error ?? 'send failed'));
           else resolve();
         },
@@ -1696,7 +1705,9 @@ export default function App() {
     const socket = socketRef.current;
     if (!socket) return;
     await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('send timed out')), 8000);
       socket.emit('message:delete', { id }, (resp: { ok: boolean; error?: string } | undefined) => {
+        clearTimeout(timer);
         if (resp?.ok === false) reject(new Error(resp?.error ?? 'Delete failed'));
         else resolve();
       });
@@ -1864,15 +1875,16 @@ export default function App() {
 
   async function assignRole(userId: string, roleId: string) {
     if (!activeServerId) return;
-    await api.assignRole(activeServerId, userId, roleId);
+    const serverId = activeServerId;
+    const prevMembers = membersByServer[serverId] ?? [];
     // Optimistically update member badge; socket member:roles_updated will reconcile
-    const role = (rolesByServer[activeServerId] ?? []).find((r) => r.id === roleId);
+    const role = (rolesByServer[serverId] ?? []).find((r) => r.id === roleId);
     if (role) {
       setMembersByServer((prev) => {
-        const list = prev[activeServerId] ?? [];
+        const list = prev[serverId] ?? [];
         return {
           ...prev,
-          [activeServerId]: list.map((m) =>
+          [serverId]: list.map((m) =>
             m.id === userId
               ? { ...m, roles: [...(m.roles ?? []), { id: role.id, name: role.name, color: role.color, position: role.position }] }
               : m,
@@ -1880,23 +1892,36 @@ export default function App() {
         };
       });
     }
+    try {
+      await api.assignRole(serverId, userId, roleId);
+    } catch (err) {
+      setMembersByServer((prev) => ({ ...prev, [serverId]: prevMembers }));
+      throw err;
+    }
   }
 
   async function removeRole(userId: string, roleId: string) {
     if (!activeServerId) return;
-    await api.removeRole(activeServerId, userId, roleId);
+    const serverId = activeServerId;
+    const prevMembers = membersByServer[serverId] ?? [];
     // Optimistically remove the role badge
     setMembersByServer((prev) => {
-      const list = prev[activeServerId] ?? [];
+      const list = prev[serverId] ?? [];
       return {
         ...prev,
-        [activeServerId]: list.map((m) =>
+        [serverId]: list.map((m) =>
           m.id === userId
             ? { ...m, roles: (m.roles ?? []).filter((r) => r.id !== roleId) }
             : m,
         ),
       };
     });
+    try {
+      await api.removeRole(serverId, userId, roleId);
+    } catch (err) {
+      setMembersByServer((prev) => ({ ...prev, [serverId]: prevMembers }));
+      throw err;
+    }
   }
 
   function handleServerReorder(newOrder: string[]) {
@@ -2004,8 +2029,8 @@ export default function App() {
           result.push({ ...m, body: '[could not decrypt]', failed: true });
         }
       } else {
-        // Legacy plaintext message
-        result.push({ ...m, body: m.body ?? '', failed: false });
+        // Legacy plaintext message — not E2E encrypted
+        result.push({ ...m, body: m.body ?? '', failed: false, isPlaintext: true });
       }
     }
     // Attach decodedReply — look up within decoded batch first, then caller-supplied existing msgs
@@ -2045,7 +2070,7 @@ export default function App() {
       const { messages } = await api.getDmMessages(dmId, MSG_PAGE);
       const decoded = dmChannel
         ? await decryptDmMessages(messages as DmWireMessage[], dmChannel)
-        : (messages as DmWireMessage[]).map((m) => ({ ...m, body: m.body ?? '', failed: false }));
+        : (messages as DmWireMessage[]).map((m) => ({ ...m, body: m.body ?? '', failed: false, isPlaintext: true }));
       setDmMessages((prev) => ({ ...prev, [dmId]: decoded }));
       setDmMsgLoaded((prev) => ({ ...prev, [dmId]: true }));
       setDmHasMore((prev) => ({ ...prev, [dmId]: messages.length === MSG_PAGE }));
@@ -2121,7 +2146,7 @@ export default function App() {
     const currentMsgs = dmMessagesRef.current[dmId] ?? [];
     const decoded = dmChannel
       ? await decryptDmMessages(messages as DmWireMessage[], dmChannel, currentMsgs)
-      : (messages as DmWireMessage[]).map((m) => ({ ...m, body: m.body ?? '', failed: false }));
+      : (messages as DmWireMessage[]).map((m) => ({ ...m, body: m.body ?? '', failed: false, isPlaintext: true }));
     setDmMessages((prev) => {
       const existing = prev[dmId] ?? [];
       const existingIds = new Set(existing.map((m) => m.id));
@@ -2147,7 +2172,7 @@ export default function App() {
   }
 
   async function startDmCall(dmId: string, hasVideo: boolean) {
-    if (dmCall) return; // already in a call
+    if (dmCallRef.current) return; // already in a call
     const dm = dms.find((d) => d.id === dmId);
     if (!dm) return;
     let localStream: MediaStream | null = null;
@@ -2425,11 +2450,17 @@ export default function App() {
 
   async function createChannel(name: string, type: 'text' | 'voice') {
     if (!activeServerId) return;
-    const r = await api.createChannel(activeServerId, { name, type });
-    setChannelsByServer((prev) => ({
-      ...prev,
-      [activeServerId]: [...(prev[activeServerId] ?? []), r.channel],
-    }));
+    if (creatingChannelRef.current) return;
+    creatingChannelRef.current = true;
+    try {
+      const r = await api.createChannel(activeServerId, { name, type });
+      setChannelsByServer((prev) => ({
+        ...prev,
+        [activeServerId]: [...(prev[activeServerId] ?? []), r.channel],
+      }));
+    } finally {
+      creatingChannelRef.current = false;
+    }
   }
 
   async function handleDeleteChannel(channelId: string, _channelName: string) {
@@ -2503,6 +2534,9 @@ export default function App() {
     try { sessionStorage.removeItem('recline.session.authKey'); } catch {}
     unregisterPushSubscription(); // remove push subscription from server + browser
     dmKeyPairRef.current = null;
+    // Clear stale dm typing timers so callbacks don't fire state updates after logout
+    Object.values(dmTypingTimers.current).forEach(clearTimeout);
+    dmTypingTimers.current = {};
     // Tear down any active DM call (closes PC + stops tracks + clears timers)
     teardownDmCall();
     if (dmCallAutoCancelRef.current) { clearTimeout(dmCallAutoCancelRef.current); dmCallAutoCancelRef.current = null; }
@@ -2786,7 +2820,16 @@ export default function App() {
   }
 
   /* ------------------------ Render ------------------------ */
-  if (!authChecked) return <div className="h-full grid place-items-center text-ink-300">Loading…</div>;
+  if (!authChecked) return (
+    <div className="h-full grid place-items-center bg-ink-950">
+      <div className="flex flex-col items-center gap-4">
+        <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-violet-600 to-rose-500 grid place-items-center text-2xl select-none">
+          🔒
+        </div>
+        <div className="h-5 w-5 rounded-full border-2 border-violet-400/30 border-t-violet-400 animate-spin" />
+      </div>
+    </div>
+  );
   if (!user) return <Auth onAuthed={(u, pw) => {
     setupPasswordRef.current = pw;
     setUser(u);

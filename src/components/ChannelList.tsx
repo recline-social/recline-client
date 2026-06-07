@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { Channel, ServerSummary } from '../types';
 
 type Props = {
@@ -51,6 +51,14 @@ export function ChannelList(props: Props) {
   const [creating, setCreating] = useState<'text' | 'voice' | null>(null);
   const [name, setName] = useState('');
   const [copied, setCopied] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  // Auto-reset delete confirmation after 3s of inactivity
+  useEffect(() => {
+    if (!confirmDeleteId) return;
+    const t = setTimeout(() => setConfirmDeleteId(null), 3000);
+    return () => clearTimeout(t);
+  }, [confirmDeleteId]);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -132,8 +140,15 @@ export function ChannelList(props: Props) {
                 onBlur={() => !name && setCreating(null)}
                 onKeyDown={(e) => e.key === 'Escape' && setCreating(null)}
                 placeholder="channel-name"
+                maxLength={32}
                 className="input text-xs py-1.5"
               />
+              {name && /[^a-z0-9\-_]/.test(name) && (
+                <p className="text-[11px] text-rose-400 px-1 mt-1">Use lowercase letters, numbers, and hyphens only</p>
+              )}
+              <div className="flex justify-end px-1 mt-0.5">
+                <span className="text-[10px] text-ink-500">{name.length}/32</span>
+              </div>
             </form>
           )}
           {text.map((c) => {
@@ -141,12 +156,15 @@ export function ChannelList(props: Props) {
             return (
               <ChannelItem
                 key={c.id}
+                channelId={c.id}
                 icon={<RoomDot />}
                 name={c.name}
                 active={c.id === activeChannelId}
                 onClick={() => onSelect(c)}
                 unread={n > 0 && c.id !== activeChannelId ? n : 0}
                 onDelete={canManage ? () => onDeleteChannel?.(c.id, c.name) : undefined}
+                confirmDeleteId={confirmDeleteId}
+                setConfirmDeleteId={setConfirmDeleteId}
               />
             );
           })}
@@ -167,8 +185,15 @@ export function ChannelList(props: Props) {
                 onBlur={() => !name && setCreating(null)}
                 onKeyDown={(e) => e.key === 'Escape' && setCreating(null)}
                 placeholder="channel-name"
+                maxLength={32}
                 className="input text-xs py-1.5"
               />
+              {name && /[^a-z0-9\-_]/.test(name) && (
+                <p className="text-[11px] text-rose-400 px-1 mt-1">Use lowercase letters, numbers, and hyphens only</p>
+              )}
+              <div className="flex justify-end px-1 mt-0.5">
+                <span className="text-[10px] text-ink-500">{name.length}/32</span>
+              </div>
             </form>
           )}
           {voice.map((c) => {
@@ -176,17 +201,27 @@ export function ChannelList(props: Props) {
             return (
               <div key={c.id}>
                 <ChannelItem
+                  channelId={c.id}
                   icon={<MicIcon />}
                   name={c.name}
                   active={c.id === activeChannelId}
                   onClick={() => onSelect(c)}
                   badge={roster.length > 0 ? `${roster.length}` : undefined}
                   onDelete={canManage ? () => onDeleteChannel?.(c.id, c.name) : undefined}
+                  confirmDeleteId={confirmDeleteId}
+                  setConfirmDeleteId={setConfirmDeleteId}
                 />
               </div>
             );
           })}
         </Section>
+
+        {canManage && text.length === 0 && voice.length === 0 && (
+          <div className="mx-3 mt-4 rounded-lg border border-dashed border-ink-600 p-3 text-center">
+            <p className="text-[12px] text-ink-400">No channels yet.</p>
+            <p className="text-[11px] text-ink-500 mt-0.5">Click <span className="font-semibold text-ink-300">+</span> above to create your first room.</p>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -232,6 +267,7 @@ function Section({
 }
 
 function ChannelItem({
+  channelId,
   icon,
   name,
   active,
@@ -239,7 +275,10 @@ function ChannelItem({
   badge,
   unread = 0,
   onDelete,
+  confirmDeleteId,
+  setConfirmDeleteId,
 }: {
+  channelId: string;
   icon: React.ReactNode;
   name: string;
   active: boolean;
@@ -247,8 +286,12 @@ function ChannelItem({
   badge?: string;
   unread?: number;
   onDelete?: () => void;
+  confirmDeleteId?: string | null;
+  setConfirmDeleteId?: (id: string | null) => void;
 }) {
   const hasUnread = unread > 0;
+  const isConfirming = !!onDelete && confirmDeleteId === channelId;
+
   return (
     <div className="group/item relative">
       {/* Active left accent bar */}
@@ -281,23 +324,47 @@ function ChannelItem({
         )}
       </button>
       {onDelete && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            // Confirm before deleting — channel delete is permanent and cascades
-            // all messages; a single misclick would cause unrecoverable data loss. (#L-9)
-            if (window.confirm(`Delete #${name}? This removes all messages and cannot be undone.`)) {
-              onDelete();
-            }
-          }}
-          title={`Delete #${name}`}
-          className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover/item:opacity-100 transition-opacity h-5 w-5 grid place-items-center rounded text-ink-400 hover:text-rose-300 hover:bg-rose-500/15"
-        >
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
+        isConfirming ? (
+          /* Inline two-step confirmation — channel delete is permanent (#L-9 / UX-003) */
+          <div
+            className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete();
+                setConfirmDeleteId?.(null);
+              }}
+              className="px-1.5 py-0.5 rounded text-[10px] font-semibold text-rose-300 bg-rose-500/20 hover:bg-rose-500/35 transition-colors"
+            >
+              Delete
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmDeleteId?.(null);
+              }}
+              className="px-1.5 py-0.5 rounded text-[10px] text-ink-400 hover:text-ink-200 hover:bg-white/[0.06] transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setConfirmDeleteId?.(channelId);
+            }}
+            title={`Delete #${name}`}
+            className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover/item:opacity-100 transition-opacity h-5 w-5 grid place-items-center rounded text-ink-400 hover:text-rose-300 hover:bg-rose-500/15"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        )
       )}
     </div>
   );

@@ -42,9 +42,12 @@ function BackupCodesScreen({
   onDone: () => void;
 }) {
   const [confirmed, setConfirmed] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const copyAll = () => {
-    navigator.clipboard.writeText(codes.join('\n')).catch(() => {});
+    navigator.clipboard.writeText(codes.join('\n'))
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); })
+      .catch(() => {});
   };
 
   return (
@@ -79,7 +82,7 @@ function BackupCodesScreen({
         onClick={copyAll}
         className="w-full text-xs text-ink-300 hover:text-ink-100 border border-white/10 hover:border-white/20 rounded-xl py-2 transition-colors"
       >
-        Copy all codes
+        {copied ? '✓ Copied!' : 'Copy all codes'}
       </button>
 
       <label className="flex items-center gap-2.5 cursor-pointer select-none">
@@ -141,6 +144,7 @@ function TotpScreen({
       // pending_token is single-use — a failed attempt means a fresh login is required
       setError((err?.message ?? 'Invalid code') + '. Please log in again.');
       setCode('');
+      setTimeout(() => onBack(), 1500);
     } finally {
       setLoading(false);
     }
@@ -299,13 +303,16 @@ function ResetScreen({ onBack }: { onBack: () => void }) {
             minLength={8}
             required
           />
+          {newPassword.length > 0 && newPassword.length < 8 && (
+            <p className="text-[11px] text-rose-400 mt-0.5">Password must be at least 8 characters</p>
+          )}
         </label>
         {error && (
           <div className="text-rose-300 text-xs bg-rose-900/30 border border-rose-900/40 rounded-lg px-3 py-2">
             {error}
           </div>
         )}
-        <button type="submit" className="btn-primary w-full !py-2" disabled={loading}>
+        <button type="submit" className="btn-primary w-full !py-2" disabled={loading || (newPassword.length > 0 && newPassword.length < 8)}>
           {loading ? 'Working…' : 'Reset password'}
         </button>
       </form>
@@ -521,7 +528,7 @@ export function Auth({ onAuthed }: Props) {
           {(['login', 'signup'] as const).map((m) => (
             <button
               key={m}
-              onClick={() => { setMode(m); setError(null); }}
+              onClick={() => { setMode(m); setPassword(''); setDisplayName(''); setError(null); }}
               className={`flex-1 text-xs font-medium py-1.5 rounded-lg transition-colors ${
                 mode === m ? 'bg-ink-700 text-ink-100 shadow-soft' : 'text-ink-300 hover:text-ink-100'
               }`}

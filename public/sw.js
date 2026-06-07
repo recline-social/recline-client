@@ -57,20 +57,24 @@ self.addEventListener('notificationclick', (event) => {
     ? rawUrl
     : '/';
 
+  // FEAT-003: prefer a window already at the target URL so the user lands in context
+  // rather than being bounced to a random already-open tab.
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
-      // If a window is already open, focus it and navigate
-      for (const client of windowClients) {
-        if ('focus' in client) {
-          client.focus();
-          if ('navigate' in client) client.navigate(targetUrl);
-          return;
-        }
+      // Prefer a client already at (or within) the target URL
+      const exactMatch = windowClients.find(
+        (c) => c.url === targetUrl || c.url.startsWith(targetUrl)
+      );
+      if (exactMatch) {
+        return exactMatch.focus().then((c) => (c.navigate ? c.navigate(targetUrl) : c));
       }
-      // Otherwise open a new window
-      if (clients.openWindow) {
-        return clients.openWindow(targetUrl);
+      // Fall back to any focusable window and navigate it
+      const anyWindow = windowClients.find((c) => 'focus' in c);
+      if (anyWindow) {
+        return anyWindow.focus().then((c) => (c.navigate ? c.navigate(targetUrl) : c));
       }
+      // No window open — open a new one
+      return clients.openWindow(targetUrl);
     })
   );
 });
