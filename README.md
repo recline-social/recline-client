@@ -1,9 +1,8 @@
 # Recline — Open Source Client
 
-**Encrypted community chat.** No email required, no tracking, E2E encrypted direct messages. Build it yourself, connect to any Recline server, or run the whole stack privately.
+**Encrypted community chat.** No email required, no tracking, E2E encrypted direct messages. This is the open-source client — build it yourself and verify every line before connecting.
 
 > **Live instance:** [app.recline.social](https://app.recline.social)
-> **Server repo:** [recline-social/recline](https://github.com/recline-social/recline) *(private — self-host guide in that repo)*
 > **Homepage:** [recline.social](https://recline.social)
 
 ---
@@ -16,7 +15,7 @@ Recline is a Discord-style community platform built from scratch with a differen
 - **Channel messages** use PBKDF2-derived keys from a channel passphrase, AES-GCM-256 encrypted before sending. Same deal — server holds ciphertext only.
 - **No JWT.** Auth tokens are 256-bit random hex stored server-side in a sessions table. Nothing decodable client-side.
 - **No email required** for signup.
-- **No third-party analytics** baked into this codebase. The hosted instance uses Datadog RUM optionally; self-hosters get none of that.
+- **No third-party analytics** baked into this codebase. The hosted instance uses Datadog RUM optionally; it is not present in this source.
 - **ECDH private keys** live in `localStorage` and are cleared on logout via `clearAllDmKeys()`. Acceptable tradeoff for alpha — planned hardware-key backing in a later release.
 
 ---
@@ -72,12 +71,7 @@ Requires Rust and the [Tauri prerequisites](https://tauri.app/start/prerequisite
 ```bash
 npm run tauri:dev          # dev mode with hot reload
 npm run tauri:build        # signed production binary
-```
-
-For a remote server instead of the bundled backend:
-
-```bash
-npm run tauri:dev:remote
+npm run tauri:dev:remote   # connects to app.recline.social instead of a local backend
 ```
 
 ### Android APK (Capacitor)
@@ -94,15 +88,9 @@ For a signed release APK set up a keystore and run `assembleRelease`.
 
 ---
 
-## Connecting to your own server
+## Connecting to Recline
 
-The client talks to whatever URL you configure. You can:
-
-1. **Use the hosted instance** at `app.recline.social` — no setup needed.
-2. **Self-host the server** and point this client at it via `VITE_API_URL`.
-3. **Tauri desktop**: the remote config (`tauri.remote.conf.json`) lets the desktop app connect to a remote server without serving a local backend.
-
-The server source is in the private monorepo. The self-hosting guide covers Docker Compose deployment, PostgreSQL setup, TURN server configuration, and environment variables.
+This client connects to **[app.recline.social](https://app.recline.social)**. The server is closed source and not publicly available. Set `VITE_API_URL` in `.env.local` if you need to point a development build at a staging environment.
 
 ---
 
