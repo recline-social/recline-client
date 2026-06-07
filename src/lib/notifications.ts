@@ -10,12 +10,22 @@
  *   - absent  → not yet decided (default: enabled if granted)
  */
 
+import { api } from './api';
+
 const PREF_KEY = 'recline:notif:enabled';
 
 // ── Availability ───────────────────────────────────────────────────────────────
 
 export function notificationsSupported(): boolean {
   return typeof window !== 'undefined' && 'Notification' in window;
+}
+
+export function pushSupported(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    'serviceWorker' in navigator &&
+    'PushManager' in window
+  );
 }
 
 // ── Permission ─────────────────────────────────────────────────────────────────
@@ -68,6 +78,89 @@ export function shouldNotify(): boolean {
   if (Notification.permission !== 'granted') return false;
   if (!getNotificationPref()) return false;
   return document.visibilityState === 'hidden';
+}
+
+// ── Web Push subscription ──────────────────────────────────────────────────────
+
+/** Convert a URL-safe base64 VAPID public key to a Uint8Array for pushManager.subscribe(). */
+function urlBase64ToUint8Array(base64String: string): ArrayBuffer {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr.buffer;
+}
+
+let _swRegistration: ServiceWorkerRegistration | null = null;
+
+/** Register the service worker once and cache the registration. */
+async function getSwRegistration(): Promise<ServiceWorkerRegistration> {
+  if (_swRegistration) return _swRegistration;
+  _swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+  // Wait until the SW is active before using push
+  await navigator.serviceWorker.ready;
+  return _swRegistration;
+}
+
+/**
+ * Register the service worker, subscribe to Web Push, and persist the
+ * subscription to the server. Idempotent — safe to call on every login.
+ *
+ * Silently no-ops if:
+ *   - push is not supported in this browser/context
+ *   - notification permission has not been granted
+ *   - the server has not configured VAPID keys
+ */
+export async function registerPushSubscription(): Promise<void> {
+  if (!pushSupported()) return;
+  if (Notification.permission !== 'granted') return;
+
+  try {
+    // Fetch VAPID public key — returns 503 if server hasn't set VAPID env vars
+    const { publicKey } = await api.getPushVapidKey();
+    if (!publicKey) return;
+
+    const reg = await getSwRegistration();
+
+    // Check for an existing subscription first to avoid unnecessary re-subscribe
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+    }
+
+    const json = sub.toJSON();
+    if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return;
+
+    await api.subscribePush({
+      endpoint: json.endpoint,
+      keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+    });
+  } catch (err) {
+    // Non-fatal — push is a nice-to-have
+    console.warn('[push] subscription failed:', err);
+  }
+}
+
+/**
+ * Unsubscribe from Web Push and remove the subscription from the server.
+ * Called on logout or when the user disables notifications in settings.
+ */
+export async function unregisterPushSubscription(): Promise<void> {
+  if (!pushSupported()) return;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration('/');
+    if (!reg) return;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) return;
+    await api.unsubscribePush(sub.endpoint).catch(() => {});
+    await sub.unsubscribe();
+  } catch (err) {
+    console.warn('[push] unsubscribe failed:', err);
+  }
 }
 
 // ── Show ───────────────────────────────────────────────────────────────────────

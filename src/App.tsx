@@ -58,6 +58,8 @@ import { BroadcastButton } from './components/BroadcastButton';
 import { Permissions, hasPermission, computeEffectivePerms } from './lib/permissions';
 import {
   requestNotificationPermission,
+  registerPushSubscription,
+  unregisterPushSubscription,
   showNotification,
   shouldNotify,
 } from './lib/notifications';
@@ -541,9 +543,10 @@ export default function App() {
       .me()
       .then((r) => {
         setUser(r.user);
-        // Request notification permission once (non-blocking)
+        // Request notification permission once, then subscribe to Web Push (non-blocking)
         requestNotificationPermission().then((granted) => {
           notifPermRef.current = granted ? 'granted' : Notification.permission;
+          if (granted) registerPushSubscription();
         });
       })
       .catch(() => {
@@ -2498,6 +2501,7 @@ export default function App() {
     clearAllKeys(); // wipe memory cache + sessionStorage in one shot (#32)
     clearAllDmKeys(); // flush DM AES keys from memory + sessionStorage
     try { sessionStorage.removeItem('recline.session.pw'); } catch {}
+    unregisterPushSubscription(); // remove push subscription from server + browser
     dmKeyPairRef.current = null;
     // Tear down any active DM call (closes PC + stops tracks + clears timers)
     teardownDmCall();
@@ -2788,6 +2792,8 @@ export default function App() {
     // Cache password in sessionStorage so page-refresh key sync runs without requiring re-login.
     // Cleared on logout and on tab close (sessionStorage lifetime).
     try { if (pw) sessionStorage.setItem('recline.session.pw', pw); } catch {}
+    // Subscribe to Web Push if permission already granted (user may have granted it in a prior session)
+    if (Notification.permission === 'granted') registerPushSubscription();
   }} />;
 
   const channels = activeServerId ? channelsByServer[activeServerId] ?? [] : [];
