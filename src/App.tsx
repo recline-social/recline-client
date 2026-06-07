@@ -2500,7 +2500,7 @@ export default function App() {
     setToken(null);
     clearAllKeys(); // wipe memory cache + sessionStorage in one shot (#32)
     clearAllDmKeys(); // flush DM AES keys from memory + sessionStorage
-    try { sessionStorage.removeItem('recline.session.pw'); } catch {}
+    try { sessionStorage.removeItem('recline.session.authKey'); } catch {}
     unregisterPushSubscription(); // remove push subscription from server + browser
     dmKeyPairRef.current = null;
     // Tear down any active DM call (closes PC + stops tracks + clears timers)
@@ -2559,9 +2559,10 @@ export default function App() {
   }
 
   async function setupDmKeys(suppliedPw: string): Promise<void> {
-    // Fall back to session-stored password on page refresh so key reconciliation runs
-    // automatically (same security model as the existing passphrase cache in sessionStorage).
-    const password = suppliedPw || sessionStorage.getItem('recline.session.pw') || '';
+    // M-7: Raw password is no longer cached in sessionStorage (was 'recline.session.pw').
+    // On page refresh, suppliedPw is empty and we rely on IndexedDB for the key pair.
+    // If a mismatch is detected without a password, the UI banner prompts re-login.
+    const password = suppliedPw;
     // authKdfSalt is included in the /api/auth/me response for v2 users.
     const authKdfSalt = user?.authKdfSalt ?? null;
 
@@ -2749,8 +2750,8 @@ export default function App() {
     const pubJwk = await exportPublicKeyJwk(restored.publicKey);
     await api.registerPublicKey(pubJwk).catch(() => {});
     setDmKeyMismatch(false);
-    // Update cached password so future page refreshes also work.
-    try { sessionStorage.setItem('recline.session.pw', password); } catch {}
+    // M-7: Raw password is not cached in sessionStorage.
+    // Key pair is already saved to IndexedDB by saveDmKeyPair above — no password cache needed.
   }
 
   async function handleRotateKey(password: string): Promise<void> {
@@ -2789,9 +2790,8 @@ export default function App() {
   if (!user) return <Auth onAuthed={(u, pw) => {
     setupPasswordRef.current = pw;
     setUser(u);
-    // Cache password in sessionStorage so page-refresh key sync runs without requiring re-login.
-    // Cleared on logout and on tab close (sessionStorage lifetime).
-    try { if (pw) sessionStorage.setItem('recline.session.pw', pw); } catch {}
+    // M-7: Raw password is no longer written to sessionStorage.
+    // The key pair is persisted in IndexedDB by setupDmKeys; page refreshes load it from there.
     // Subscribe to Web Push if permission already granted (user may have granted it in a prior session)
     if (Notification.permission === 'granted') registerPushSubscription();
   }} />;

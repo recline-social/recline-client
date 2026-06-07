@@ -7,6 +7,17 @@ import { userColor } from '../lib/colors';
 import type { DmChannel, DmMessage, DmCallState, User } from '../types';
 import { api } from '../lib/api';
 
+// ── URL safety guard — prevents javascript: and data: URIs from server-supplied URLs ──
+function isSafeUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' || u.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function fmtTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -66,9 +77,9 @@ function FileAttachmentView({ fileUrl, fileName, fileSize, fileType }: {
 
   if (isImage) {
     return (
-      <a href={fileUrl} target="_blank" rel="noopener noreferrer"
+      <a href={isSafeUrl(fileUrl) ? fileUrl : '#'} target="_blank" rel="noopener noreferrer"
         className="block mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06] hover:border-white/10 transition-colors">
-        <img src={fileUrl} alt={fileName ?? 'image'}
+        <img src={isSafeUrl(fileUrl) ? fileUrl : undefined} alt={fileName ?? 'image'}
           className="w-full max-h-64 object-contain bg-black/20" loading="lazy"
           onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
         <div className="px-2.5 py-1.5 bg-ink-800/60 flex items-center gap-2">
@@ -82,7 +93,7 @@ function FileAttachmentView({ fileUrl, fileName, fileSize, fileType }: {
   if (isVideo) {
     return (
       <div className="mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06]">
-        <video src={fileUrl} controls preload="metadata" className="w-full max-h-64 bg-black" style={{ display: 'block' }} />
+        <video src={isSafeUrl(fileUrl) ? fileUrl : undefined} controls preload="metadata" className="w-full max-h-64 bg-black" style={{ display: 'block' }} />
         <div className="px-2.5 py-1.5 bg-ink-800/60 flex items-center gap-2">
           <span className="text-[11px] text-ink-300 truncate flex-1">{fileName}</span>
           {fileSize && <span className="text-[10px] text-ink-500 shrink-0">{fmtBytes(fileSize)}</span>}
@@ -101,13 +112,13 @@ function FileAttachmentView({ fileUrl, fileName, fileSize, fileType }: {
             {fileSize && <p className="text-[10px] text-ink-400">{fmtBytes(fileSize)}</p>}
           </div>
         </div>
-        <audio src={fileUrl} controls preload="metadata" className="w-full h-8" style={{ display: 'block' }} />
+        <audio src={isSafeUrl(fileUrl) ? fileUrl : undefined} controls preload="metadata" className="w-full h-8" style={{ display: 'block' }} />
       </div>
     );
   }
 
   return (
-    <a href={fileUrl} target="_blank" rel="noopener noreferrer"
+    <a href={isSafeUrl(fileUrl) ? fileUrl : '#'} target="_blank" rel="noopener noreferrer"
       className="mt-1.5 flex items-center gap-3 max-w-sm rounded-xl border border-white/[0.06] bg-ink-800/60 px-3 py-2.5 hover:bg-ink-700/60 hover:border-white/10 transition-colors">
       <span className="text-2xl shrink-0">{fileIcon(fileType)}</span>
       <div className="min-w-0 flex-1">

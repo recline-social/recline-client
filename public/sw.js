@@ -51,7 +51,11 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
-  const targetUrl = event.notification.data?.url ?? '/';
+  const rawUrl = event.notification.data?.url ?? '/';
+  // Validate: only allow relative paths or http(s):// URLs to prevent javascript: URIs
+  const targetUrl = (rawUrl.startsWith('/') || rawUrl.startsWith('https://') || rawUrl.startsWith('http://'))
+    ? rawUrl
+    : '/';
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {

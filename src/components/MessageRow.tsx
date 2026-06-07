@@ -251,6 +251,17 @@ function SparkPickerPortal({
   );
 }
 
+// ── URL safety guard — prevents javascript: and data: URIs from server-supplied URLs ──
+function isSafeUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' || u.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
 // ── File attachment renderer ──────────────────────────────────────────────────
 function fmtBytes(b: number): string {
   if (b < 1024) return `${b} B`;
@@ -265,8 +276,8 @@ function FileAttachmentView({ url, name, size, type }: { url: string; name: stri
 
   if (isImage) {
     return (
-      <a href={url} target="_blank" rel="noopener noreferrer" className="block mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06] hover:border-white/10 transition-colors">
-        <img src={url} alt={name} className="w-full max-h-64 object-contain bg-black/20" loading="lazy" />
+      <a href={isSafeUrl(url) ? url : '#'} target="_blank" rel="noopener noreferrer" className="block mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06] hover:border-white/10 transition-colors">
+        <img src={isSafeUrl(url) ? url : undefined} alt={name} className="w-full max-h-64 object-contain bg-black/20" loading="lazy" />
         <div className="px-2.5 py-1.5 bg-ink-800/60 flex items-center gap-2">
           <span className="text-[11px] text-ink-300 truncate flex-1">{name}</span>
           <span className="text-[10px] text-ink-500 shrink-0">{fmtBytes(size)}</span>
@@ -279,7 +290,7 @@ function FileAttachmentView({ url, name, size, type }: { url: string; name: stri
     return (
       <div className="mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06]">
         <video
-          src={url}
+          src={isSafeUrl(url) ? url : undefined}
           controls
           preload="metadata"
           className="w-full max-h-64 bg-black"
@@ -303,7 +314,7 @@ function FileAttachmentView({ url, name, size, type }: { url: string; name: stri
             <p className="text-[10px] text-ink-400">{fmtBytes(size)}</p>
           </div>
         </div>
-        <audio src={url} controls preload="metadata" className="w-full h-8" style={{ display: 'block' }} />
+        <audio src={isSafeUrl(url) ? url : undefined} controls preload="metadata" className="w-full h-8" style={{ display: 'block' }} />
       </div>
     );
   }
@@ -316,7 +327,7 @@ function FileAttachmentView({ url, name, size, type }: { url: string; name: stri
 
   return (
     <a
-      href={url}
+      href={isSafeUrl(url) ? url : '#'}
       download={name}
       className="mt-1.5 flex items-center gap-3 max-w-sm rounded-xl border border-white/[0.06] bg-ink-800/60 px-3 py-2.5 hover:bg-ink-700/60 hover:border-white/10 transition-colors"
     >

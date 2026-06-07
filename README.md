@@ -137,61 +137,61 @@ These hashes reflect the current `main` branch. They are updated with every comm
 
 | MD5 | File |
 |-----|------|
-| `9e70006ccced243e7b9b09c0249c8ec1` | `capacitor.config.ts` |
-| `4daf97a683858cde29f0c36d470b2a76` | `index.html` |
-| `1360da020973f4001ec76ce8700c8141` | `package.json` |
-| `c735540bb63936a123bc867d950c9f69` | `postcss.config.js` |
-| `96360220da5c01d39575a9f5d0351bcf` | `public/sw.js` |
-| `18eb1da93dfec025fcaaaf2aa84eb64c` | `src/App.tsx` |
-| `037d42344df9ae02df712469db35625f` | `src/components/Auth.tsx` |
-| `13beae7eb32c652596a57d4099aea9d7` | `src/components/Avatar.tsx` |
-| `2273e972beffa9c680e9c9c5ad3aa51a` | `src/components/BroadcastButton.tsx` |
-| `142afdbc8973dd9975cdfa4009884d9d` | `src/components/BroadcastOverlay.tsx` |
-| `7aa671d56ce39d9812a2950593ac8d20` | `src/components/CallView.tsx` |
-| `a609f7ebaa894a90dc58084e300fba41` | `src/components/ChannelList.tsx` |
-| `91cd23ec475e53aab2fcc8ef6ffff2d0` | `src/components/ChatPanel.tsx` |
-| `41d92c5a15784bdbd73840b0c8741cbe` | `src/components/Composer.tsx` |
-| `e3a0aae5ad145acf6171229f5af6b15b` | `src/components/DmCallIncoming.tsx` |
-| `debc984152061537cab3a3caeae0098c` | `src/components/DmCallWindow.tsx` |
-| `c419c9463cf71f70e1c8dc0cc3b7216d` | `src/components/DmList.tsx` |
-| `d58531e352f06d2c5d1ce6e6b1b82e4c` | `src/components/DmView.tsx` |
-| `5b20556c1d7c3101ebb6f867c13bf974` | `src/components/EmojiPicker.tsx` |
-| `63758cdb502c735b0d60f7b4924014f6` | `src/components/EmptyHome.tsx` |
-| `f65e5ddb3c6663ff88fa6daebe8a5a23` | `src/components/FeedbackButton.tsx` |
-| `c496c98fc8c53d7b6baa46be8aac793f` | `src/components/InviteJoinModal.tsx` |
-| `0816677b59c7a36c86a66ba4d7955579` | `src/components/MarkdownContent.tsx` |
-| `23e7f6056c797b750f60c195c319f61b` | `src/components/MemberList.tsx` |
-| `43eccad136a724ee81581440ab572c57` | `src/components/MessageRow.tsx` |
-| `c2393e109ec62aac4ede9ddb99de1517` | `src/components/Modal.tsx` |
-| `17a023589ac74aa8c78874c02f3f1c05` | `src/components/ProfileDialog.tsx` |
-| `2e4743cf190c518d1e8897e86b024df1` | `src/components/ReportDialog.tsx` |
-| `e3f250f790af9ea032a50d3a225a82f9` | `src/components/ScreenShareDialog.tsx` |
-| `81bdf7220b6415f3066ccd7a79254a40` | `src/components/ServerDialogs.tsx` |
-| `1510f0acb7bb9c1035f85fb47d77a985` | `src/components/ServerHome.tsx` |
-| `12ec060c43150f6a01e649b475d44dda` | `src/components/ServerRail.tsx` |
-| `2a9f12fac26949e96f6d4b62f722dfc5` | `src/components/ServerSettingsDialog.tsx` |
-| `e27a2f8a316ec81e7a8ced50d554b343` | `src/components/StatusDot.tsx` |
-| `4868c7695393b098a00f3806caaba3f0` | `src/components/TypingIndicator.tsx` |
-| `08e1081db4edf84dab09d6552a18f56e` | `src/components/UserProfileCard.tsx` |
-| `1a7f08abdedba2aafa0b6a348668496d` | `src/components/VoiceBar.tsx` |
-| `d6c2d355c9e5daef4805a728e504e1f5` | `src/components/Welcome.tsx` |
-| `dfdcec1de14639c7de2db0888d72d327` | `src/lib/api.ts` |
-| `d26079b60d6e92b7fd3f346407ee6653` | `src/lib/callSounds.ts` |
-| `8541e619161b9d10e3ee5c77a58d552c` | `src/lib/colors.ts` |
-| `24382fa3d9c329d3e6b9f573d7757c26` | `src/lib/crypto.ts` |
-| `6e1fb7500cfbb48c1295e8b95410eb99` | `src/lib/messageAnimations.ts` |
-| `6dc92db4d26993cc352e16363aedf30c` | `src/lib/notifications.ts` |
-| `3f0defb643313705136908e665b365c9` | `src/lib/permissions.ts` |
-| `f512c53bf7e2819951a7fa23d61feb79` | `src/lib/serverUrl.ts` |
-| `d9b3b5760140bd2bffae25c2b8eaa8e7` | `src/lib/socket.ts` |
-| `d09cae7479b7d8451f81eb0ae08179c8` | `src/lib/webrtc.ts` |
-| `376d8c3eefd90716e83c9040380055bb` | `src/main.tsx` |
-| `ac015e90b7132b17a7b0cec3534f3564` | `src/styles/index.css` |
-| `0d69ed26d88d041a31eef24c087ebc10` | `src/types.ts` |
-| `0352474ba2918efe13895edbc3780d94` | `src/vite-env.d.ts` |
-| `4533d5801213cb63fbcceb96cc4a44e9` | `tailwind.config.js` |
-| `3010c4bd00b07f30170450a38c15b47f` | `tsconfig.json` |
-| `5d6c8100646132858c1b7781418c8e10` | `vite.config.ts` |
+| `5180ea14938166a9cb27bde85a3719cd` | `capacitor.config.ts` |
+| `777f245cc403f2a588eb0690a69750d3` | `index.html` |
+| `638bbeca1b96d1894257ef58e29539ca` | `package.json` |
+| `33fad9c02cb0ec6d6030369ef6347d57` | `postcss.config.js` |
+| `9ae53ca8df28fdd7f23e94a8d9a7137d` | `public/sw.js` |
+| `cc6dd6a47d605afe26d03a56040cd9ec` | `src/App.tsx` |
+| `e46498198b38ae64f5c4ddb6c184e344` | `src/components/Auth.tsx` |
+| `df60e243ebc9afbe7a065a4f88d12e6d` | `src/components/Avatar.tsx` |
+| `42fbb5dca994c5087bf9bbfcb66f28d6` | `src/components/BroadcastButton.tsx` |
+| `60d06b361b8590e02813aee8616044a6` | `src/components/BroadcastOverlay.tsx` |
+| `9bf50c9c39d853bfbdb211db084369ab` | `src/components/CallView.tsx` |
+| `d98fc89434164730503653ec929526ce` | `src/components/ChannelList.tsx` |
+| `ca7ae3407c16f0f31378c4cd27f9f16b` | `src/components/ChatPanel.tsx` |
+| `76a1aeda4510658159fc565fead37aec` | `src/components/Composer.tsx` |
+| `52ddae48315ab062267bca852fa15248` | `src/components/DmCallIncoming.tsx` |
+| `1260d3e8b894559df80348ed5000f078` | `src/components/DmCallWindow.tsx` |
+| `639503cb6929144d0143bdbe8a799bb6` | `src/components/DmList.tsx` |
+| `fd9bcc57d7b919a5c7565b4a6b501b66` | `src/components/DmView.tsx` |
+| `98db0d042b93396368e1e3e7fab128cb` | `src/components/EmojiPicker.tsx` |
+| `137e1a38ba9e387ba1425538000d3dc1` | `src/components/EmptyHome.tsx` |
+| `3ec26cf18e38f5b8dd73388e2b5b8ff8` | `src/components/FeedbackButton.tsx` |
+| `71d540493bb4d7fdd5706f3af06b4c1d` | `src/components/InviteJoinModal.tsx` |
+| `129039c02661e419ebe5886f26c434ac` | `src/components/MarkdownContent.tsx` |
+| `208c9dd479dbb3665e3381cdf4787acd` | `src/components/MemberList.tsx` |
+| `3df9606b48fce5871865770abd1a93ce` | `src/components/MessageRow.tsx` |
+| `96e5f6074abe18ed966df1952a1fdbf4` | `src/components/Modal.tsx` |
+| `5dee843590effd8ea37a7b60f378db29` | `src/components/ProfileDialog.tsx` |
+| `082f70d94a0d800a08f07d9ccb4f4855` | `src/components/ReportDialog.tsx` |
+| `c09a1e734e8905b76ecc1bae2b1969eb` | `src/components/ScreenShareDialog.tsx` |
+| `449d7ff5be1562b5515176c078ccf01a` | `src/components/ServerDialogs.tsx` |
+| `bd0c6bf0df521b16e000561e4e802fa2` | `src/components/ServerHome.tsx` |
+| `0b7a2b22726a395650a36d86ed721fc0` | `src/components/ServerRail.tsx` |
+| `95a8d41e925654e9533ff5814f37eb15` | `src/components/ServerSettingsDialog.tsx` |
+| `6acf7cc91dd233dcd7b3f5443abbb660` | `src/components/StatusDot.tsx` |
+| `39418f191a79954d4e8d7cef6afa0976` | `src/components/TypingIndicator.tsx` |
+| `d657183ba38d8b5cda1598df582d1be3` | `src/components/UserProfileCard.tsx` |
+| `da5214fc9959c6b53832b96745f44b89` | `src/components/VoiceBar.tsx` |
+| `fd00550fa2717b6132e47e5d115d5981` | `src/components/Welcome.tsx` |
+| `b95010eef5b86ae456a8925763c3f9c2` | `src/lib/api.ts` |
+| `c247aa4608ca836efdf21c4bdcf4d616` | `src/lib/callSounds.ts` |
+| `4d0d26da228c55c1bed5fc3bf594e996` | `src/lib/colors.ts` |
+| `2d2f20e6dde146634ecf55d4caef3040` | `src/lib/crypto.ts` |
+| `715de05bc50a74dc55ccbcf5edee9619` | `src/lib/messageAnimations.ts` |
+| `7e9f34050b023bcace8c6e2fdece1bd4` | `src/lib/notifications.ts` |
+| `b6d093f351bfd454934e568af85aa7ff` | `src/lib/permissions.ts` |
+| `d2dcb518a2f566cd7819a8a2dd71fbac` | `src/lib/serverUrl.ts` |
+| `209878105b33c255fe1a2cb5341a1009` | `src/lib/socket.ts` |
+| `481c7b64e29712dc694fc7eb98875ff9` | `src/lib/webrtc.ts` |
+| `171ad37a63424ae2a913bd5e3f84287e` | `src/main.tsx` |
+| `056b93f1b27ea3d6cf714230f64638f4` | `src/styles/index.css` |
+| `6be37fe080ecfd8387a9a76cd0f94d58` | `src/types.ts` |
+| `8f68c27c3fc38817b2726b20e2d4f1ee` | `src/vite-env.d.ts` |
+| `ffa035343180a9cffbcaf0c40df0404e` | `tailwind.config.js` |
+| `3c78b691084af794cd28d93176e12aaf` | `tsconfig.json` |
+| `6c4aaa9b1436aa907b46ab9479938d8d` | `vite.config.ts` |
 
 > **Note on forks:** If you're running a community fork of Recline, the maintainer of that fork should publish their own hash table for the files they distribute. Comparing against this table will always show differences for a modified fork — that's expected. The question is whether those differences are documented and intentional.
 
@@ -227,7 +227,7 @@ Each message:
 
 ```
 Channel passphrase (user-set, never stored server-side):
-  key = PBKDF2(passphrase, salt, 200_000 iterations, SHA-256, 32 bytes) → AES-GCM-256 key
+  key = PBKDF2(passphrase, salt, 300_000 iterations, SHA-256, 32 bytes) → AES-GCM-256 key
 
 Each message: same AES-GCM-256 pattern as above
 Key stored in sessionStorage, cleared on logout
