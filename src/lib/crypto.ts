@@ -279,7 +279,7 @@ export async function decryptDmKeyBackup(blob: string, password: string): Promis
     // will re-import as non-extractable when storing to IndexedDB.
     const [publicKey, privateKey] = await Promise.all([
       crypto.subtle.importKey('jwk', pubJwk,  { name: 'ECDH', namedCurve: 'P-256' }, true,  []),
-      crypto.subtle.importKey('jwk', privJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']),
+      crypto.subtle.importKey('jwk', privJwk, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']),
     ]);
     return { publicKey, privateKey };
   } catch {
@@ -334,6 +334,15 @@ export async function loadDmKeyPair(): Promise<CryptoKeyPair | null> {
       await saveDmKeyPair(pair);
       localStorage.removeItem('recline.dm.keypair');
       localStorage.removeItem('recline.dm.keypair.history');
+      // Clean up any legacy DM history / message-cache entries left in localStorage.
+      try {
+        const legacyKeys: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('dm_')) legacyKeys.push(k);
+        }
+        legacyKeys.forEach((k) => localStorage.removeItem(k));
+      } catch { /* non-fatal — key loading must not fail over cleanup errors */ }
       return pair;
     }
 

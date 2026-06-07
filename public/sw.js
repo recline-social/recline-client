@@ -10,6 +10,14 @@ self.addEventListener('activate', (event) => {
 });
 
 // ── Push notifications ────────────────────────────────────────────────────────
+
+/** CLIENT-003: Sanitize a push payload field to a safe string.
+ *  Rejects non-strings and truncates to maxLen characters. */
+function sanitizePushField(value, maxLen, fallback) {
+  if (typeof value !== 'string') return fallback;
+  return value.length > maxLen ? value.slice(0, maxLen) : value;
+}
+
 self.addEventListener('push', (event) => {
   if (!event.data) return;
 
@@ -20,13 +28,16 @@ self.addEventListener('push', (event) => {
     payload = { title: 'Recline', body: event.data.text() };
   }
 
-  const title = payload.title ?? 'Recline';
+  // CLIENT-003: validate all user-controlled fields before use.
+  const title = sanitizePushField(payload.title, 500, 'Recline');
+  const body  = sanitizePushField(payload.body,  500, 'New notification');
+  const url   = sanitizePushField(payload.url,   500, '/');
   const options = {
-    body: payload.body ?? 'New notification',
+    body,
     icon: '/android-chrome-192x192.png',
     badge: '/favicon-32x32.png',
     tag: payload.tag ?? 'recline',
-    data: { url: payload.url ?? '/' },
+    data: { url },
     silent: false,
     vibrate: [100, 50, 100],
   };

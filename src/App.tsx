@@ -325,6 +325,9 @@ export default function App() {
   // True when the local ECDH key doesn't match the server's stored key AND no password is
   // available to reconcile (page refresh scenario). DM decryption may be degraded.
   const [dmKeyMismatch, setDmKeyMismatch] = useState(false);
+  const [dmSyncPw, setDmSyncPw] = useState('');
+  const [dmSyncLoading, setDmSyncLoading] = useState(false);
+  const [dmSyncErr, setDmSyncErr] = useState('');
   const [dmHasMore, setDmHasMore] = useState<Record<string, boolean>>({});
   const [dmUnreadMap, setDmUnreadMap] = useState<Record<string, number>>({});
   // DM calls
@@ -2494,7 +2497,10 @@ export default function App() {
     setToken(null);
     clearAllKeys(); // wipe memory cache + sessionStorage in one shot (#32)
     clearAllDmKeys(); // flush DM AES keys from memory + sessionStorage
+    try { sessionStorage.removeItem('recline.session.pw'); } catch {}
     dmKeyPairRef.current = null;
+    // Tear down any active DM call (closes PC + stops tracks + clears timers)
+    teardownDmCall();
     if (dmCallAutoCancelRef.current) { clearTimeout(dmCallAutoCancelRef.current); dmCallAutoCancelRef.current = null; }
     if (dmCallDisconnectTimerRef.current) { clearTimeout(dmCallDisconnectTimerRef.current); dmCallDisconnectTimerRef.current = null; }
     setUser(null);
@@ -2548,7 +2554,10 @@ export default function App() {
     } catch { return false; }
   }
 
-  async function setupDmKeys(password: string): Promise<void> {
+  async function setupDmKeys(suppliedPw: string): Promise<void> {
+    // Fall back to session-stored password on page refresh so key reconciliation runs
+    // automatically (same security model as the existing passphrase cache in sessionStorage).
+    const password = suppliedPw || sessionStorage.getItem('recline.session.pw') || '';
     // authKdfSalt is included in the /api/auth/me response for v2 users.
     const authKdfSalt = user?.authKdfSalt ?? null;
 
@@ -2685,18 +2694,26 @@ export default function App() {
     dmKeyPairRef.current = pair;
     setDmMsgLoaded({});
     const freshJwk = await exportPublicKeyJwk(pair.publicKey);
-    if (serverKeyJwk === null) {
-      // Server has no key — register freely (no password needed).
-      await api.registerPublicKey(freshJwk).catch(() => {});
-      setDmKeyMismatch(false);
-    } else if (password) {
-      // Server has a different key — override with password.
-      await api.registerPublicKey(freshJwk, password).catch(() => {});
-      setDmKeyMismatch(false);
-    } else {
-      // Server has a key we can't override without credentials.
-      // Flag mismatch — user needs to log in once to reconcile.
-      setDmKeyMismatch(true);
+    // CLIENT-004: await registerPublicKey before setDmKeysReady so the server
+    // has the public key before we start sending/receiving DMs.  Use try/catch
+    // so a network error is visible in the console but never blocks the user.
+    try {
+      if (serverKeyJwk === null) {
+        // Server has no key — register freely (no password needed).
+        await api.registerPublicKey(freshJwk);
+        setDmKeyMismatch(false);
+      } else if (password) {
+        // Server has a different key — override with password.
+        await api.registerPublicKey(freshJwk, password);
+        setDmKeyMismatch(false);
+      } else {
+        // Server has a key we can't override without credentials.
+        // Flag mismatch — user needs to log in once to reconcile.
+        setDmKeyMismatch(true);
+      }
+    } catch (err) {
+      console.error('[setupDmKeys] registerPublicKey failed:', err);
+      // Still mark keys ready so the user is not blocked from the DM UI.
     }
     setDmKeysReady(true);
     if (password) {
@@ -2727,6 +2744,9 @@ export default function App() {
     setDmMessages({});
     const pubJwk = await exportPublicKeyJwk(restored.publicKey);
     await api.registerPublicKey(pubJwk).catch(() => {});
+    setDmKeyMismatch(false);
+    // Update cached password so future page refreshes also work.
+    try { sessionStorage.setItem('recline.session.pw', password); } catch {}
   }
 
   async function handleRotateKey(password: string): Promise<void> {
@@ -2762,7 +2782,13 @@ export default function App() {
 
   /* ------------------------ Render ------------------------ */
   if (!authChecked) return <div className="h-full grid place-items-center text-ink-300">Loading…</div>;
-  if (!user) return <Auth onAuthed={(u, pw) => { setupPasswordRef.current = pw; setUser(u); }} />;
+  if (!user) return <Auth onAuthed={(u, pw) => {
+    setupPasswordRef.current = pw;
+    setUser(u);
+    // Cache password in sessionStorage so page-refresh key sync runs without requiring re-login.
+    // Cleared on logout and on tab close (sessionStorage lifetime).
+    try { if (pw) sessionStorage.setItem('recline.session.pw', pw); } catch {}
+  }} />;
 
   const channels = activeServerId ? channelsByServer[activeServerId] ?? [] : [];
   const members = activeServerId ? membersByServer[activeServerId] ?? [] : [];
@@ -2869,15 +2895,49 @@ export default function App() {
           </div>
 
           {dmKeyMismatch && (
-            <div className="mx-4 mt-3 mb-0 flex items-start gap-2 bg-amber-500/10 border border-amber-500/25 rounded-xl px-4 py-2.5 text-[12px] text-amber-300 shrink-0">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 mt-0.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-              <span>
-                Your DM encryption keys are out of sync with the server — messages may not decrypt correctly.{' '}
-                <strong>Log out and log back in</strong> to restore end-to-end encryption.
-              </span>
-              <button onClick={() => setDmKeyMismatch(false)} className="ml-auto shrink-0 text-amber-400/60 hover:text-amber-300 transition-colors">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="11" y2="11"/><line x1="11" y1="1" x2="1" y2="11"/></svg>
-              </button>
+            <div className="mx-4 mt-3 mb-0 bg-amber-500/10 border border-amber-500/25 rounded-xl px-4 py-3 text-[12px] text-amber-300 shrink-0">
+              <div className="flex items-start gap-2 mb-2">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 mt-0.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                <span className="flex-1">DM encryption keys out of sync — enter your password to restore end-to-end encryption.</span>
+                <button onClick={() => { setDmKeyMismatch(false); setDmSyncPw(''); setDmSyncErr(''); }} className="shrink-0 text-amber-400/60 hover:text-amber-300 transition-colors">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="11" y2="11"/><line x1="11" y1="1" x2="1" y2="11"/></svg>
+                </button>
+              </div>
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (!dmSyncPw || dmSyncLoading) return;
+                  setDmSyncLoading(true);
+                  setDmSyncErr('');
+                  try {
+                    await handleSyncDmKey(dmSyncPw);
+                    setDmSyncPw('');
+                  } catch (err: unknown) {
+                    setDmSyncErr((err as Error).message ?? 'Sync failed — check your password.');
+                  } finally {
+                    setDmSyncLoading(false);
+                  }
+                }}
+                className="flex gap-2 items-center"
+              >
+                <input
+                  type="password"
+                  value={dmSyncPw}
+                  onChange={(e) => setDmSyncPw(e.target.value)}
+                  placeholder="Account password"
+                  className="flex-1 min-w-0 bg-ink-800 border border-white/[0.09] rounded-lg px-3 py-1.5 text-[12px] text-ink-100 placeholder:text-ink-500 outline-none focus:border-amber-500/50"
+                  disabled={dmSyncLoading}
+                  autoComplete="current-password"
+                />
+                <button
+                  type="submit"
+                  disabled={!dmSyncPw || dmSyncLoading}
+                  className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/30 text-amber-300 font-medium hover:bg-amber-500/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {dmSyncLoading ? 'Syncing…' : 'Sync Keys'}
+                </button>
+              </form>
+              {dmSyncErr && <p className="mt-1.5 text-red-400 text-[11px]">{dmSyncErr}</p>}
             </div>
           )}
 

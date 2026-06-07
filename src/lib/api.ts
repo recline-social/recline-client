@@ -705,6 +705,9 @@ export const api = {
           try { resolve(JSON.parse(xhr.responseText)); }
           catch { reject(new Error('invalid server response')); }
         } else {
+          // CLIENT-002: mirror the fetch-based request() 401 handler so expired/revoked
+          // sessions are caught even for XHR-based uploads.
+          if (xhr.status === 401) _onUnauthorized?.();
           try {
             const body = JSON.parse(xhr.responseText);
             reject(new Error(body.error ?? `upload failed (${xhr.status})`));

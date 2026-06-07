@@ -140,6 +140,10 @@ function parseInline(text: string, meId?: string): React.ReactNode[] {
         </code>,
       );
     } else if (full.startsWith('http')) {
+      // URL length cap: refuse to linkify suspiciously long URLs (> 2048 chars)
+      if (full.length > 2048) {
+        result.push(full);
+      } else
       try {
         const url = new URL(full);
         if (url.protocol === 'https:' || url.protocol === 'http:') {
