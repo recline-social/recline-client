@@ -43,6 +43,7 @@ import {
   deriveDmKey,
   cacheDmKey,
   getCachedDmKey,
+  clearDmKey,
   clearAllDmKeys,
   rotateDmKeyPair,
   archiveCurrentKeyPair,
@@ -1557,6 +1558,27 @@ export default function App() {
     loadDmMessages(activeDmId);
     // Clear unread when switching to this DM
     setDmUnreadMap((prev) => prev[activeDmId] ? { ...prev, [activeDmId]: 0 } : prev);
+
+    // Proactively refresh otherPublicKey when it's null — this fires every time the
+    // user clicks a DM in the sidebar (setActiveDmId without calling openDm), so stale
+    // null keys from the initial listDms load are healed before the first send attempt.
+    const dm = dmsRef.current.find((d) => d.id === activeDmId);
+    if (dm && !dm.otherPublicKey) {
+      api.getPeerPublicKey(dm.otherUserId)
+        .then(({ publicKey }) => {
+          if (!publicKey) return;
+          // Evict the stale AES key so getDmKey re-derives with the fresh peer key.
+          clearDmKey(activeDmId);
+          setDms((prev) => {
+            const next = prev.map((d) =>
+              d.id === activeDmId ? { ...d, otherPublicKey: publicKey } : d,
+            );
+            dmsRef.current = next;
+            return next;
+          });
+        })
+        .catch(() => { /* non-fatal — peer may not have registered a key yet */ });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDmId, dmKeysReady]);
 
@@ -2502,6 +2524,21 @@ export default function App() {
   }
 
   async function sendDmMessage(dmId: string, text: string, file?: { fileUrl: string; fileName: string; fileSize: number; fileType: string }, replyToId?: string | null) {
+    // Race guard: setupDmKeys runs concurrently with listDms on load — wait up to 8 s
+    // for the key pair to materialise before giving up.  Covers the window between
+    // component mount and the first IndexedDB read (or fresh key generation) completing.
+    if (!dmKeyPairRef.current) {
+      const paired = await new Promise<boolean>((resolve) => {
+        const deadline = Date.now() + 8_000;
+        const id = setInterval(() => {
+          if (dmKeyPairRef.current) { clearInterval(id); resolve(true); }
+          else if (Date.now() >= deadline) { clearInterval(id); resolve(false); }
+        }, 80);
+      });
+      if (!paired) {
+        throw new Error('Unable to encrypt message — DM key not available. Try reloading.');
+      }
+    }
     const dmChannel = dmsRef.current.find((d) => d.id === dmId);
     const key = dmChannel ? await getDmKey(dmChannel) : null;
     const fileFields = file ? { fileUrl: file.fileUrl, fileName: file.fileName, fileSize: file.fileSize, fileType: file.fileType } : {};
