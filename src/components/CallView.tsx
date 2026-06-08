@@ -387,7 +387,7 @@ export function CallView({
           {error && (
             <div className="text-rose-300 text-xs mb-2 px-1">{error}</div>
           )}
-          <div className="panel-inner rounded-2xl px-4 py-3 flex items-center justify-center gap-3">
+          <div className="panel-inner rounded-2xl px-4 py-3 flex items-center justify-center gap-3 overflow-x-auto">
             <ControlButton
               active={micOn}
               disabled={deafOn}
@@ -540,11 +540,11 @@ function PreJoin({
           Start or join a peer-to-peer call. Audio, video and screen share stay between you and the other people in the room.
         </p>
         {error && <div className="text-rose-300 text-xs mb-3">{error}</div>}
-        <div className="flex gap-2 justify-center">
-          <button className="btn-primary" disabled={joining} onClick={() => onJoin(false)}>
+        <div className="flex flex-col sm:flex-row gap-2 justify-center">
+          <button className="btn-primary w-full sm:w-auto" disabled={joining} onClick={() => onJoin(false)}>
             {joining ? 'Connecting…' : 'Join voice'}
           </button>
-          <button className="btn-ghost border border-white/10" disabled={joining} onClick={() => onJoin(true)}>
+          <button className="btn-ghost border border-white/10 w-full sm:w-auto" disabled={joining} onClick={() => onJoin(true)}>
             Join with video
           </button>
         </div>
@@ -744,10 +744,10 @@ function Tile({
         </div>
       )}
 
-      {/* ── Hover controls overlay ─────────────────────────────────────────── */}
-      {/* Fades in on hover (desktop). Controls: volume slider + pin button.    */}
-      {/* Volume is hidden on strip variant (too narrow) and for self tiles.    */}
-      <div className="absolute top-0 left-0 right-0 flex items-center gap-2 px-2 py-1.5 bg-gradient-to-b from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10 pointer-events-none group-hover:pointer-events-auto">
+      {/* ── Controls overlay ───────────────────────────────────────────────── */}
+      {/* Mobile: always visible (no hover on touch). Desktop md+: fade on hover. */}
+      {/* Volume is hidden on strip variant (too narrow) and for self tiles.       */}
+      <div className="absolute top-0 left-0 right-0 flex items-center gap-2 px-2 py-1.5 bg-gradient-to-b from-black/70 to-transparent opacity-100 pointer-events-auto md:opacity-0 md:pointer-events-none md:group-hover:opacity-100 md:group-hover:pointer-events-auto transition-opacity duration-150 z-10">
         {!tile.isSelf && !isStrip && onSetVolume && (
           <div className="flex items-center gap-1.5 flex-1 min-w-0">
             {/* Volume icon — adapts to level */}
@@ -873,7 +873,7 @@ function ControlButton({
       onClick={disabled ? undefined : onClick}
       title={label}
       disabled={disabled}
-      className={`h-11 w-11 rounded-xl grid place-items-center transition-colors border ${cls}`}
+      className={`h-12 w-12 md:h-11 md:w-11 rounded-xl grid place-items-center transition-colors border ${cls}`}
     >
       {icon}
     </button>

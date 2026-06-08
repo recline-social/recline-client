@@ -3,6 +3,11 @@ import { createPortal } from 'react-dom';
 import { Avatar } from './Avatar';
 import type { DmCallState } from '../types';
 
+// getDisplayMedia is desktop-only — not available in Android WebView or iOS Safari.
+const canScreenShare =
+  typeof navigator !== 'undefined' &&
+  typeof (navigator.mediaDevices as MediaDevices & { getDisplayMedia?: unknown })?.getDisplayMedia === 'function';
+
 function formatDuration(startedAt: number | null): string {
   if (!startedAt) return '';
   const secs = Math.floor((Date.now() - startedAt) / 1000);
@@ -148,31 +153,50 @@ export function DmCallWindow({
     if (audioRef.current) audioRef.current.volume = call.peerVolume ?? 1;
   }, [call.peerVolume]);
 
-  // ── Drag ───────────────────────────────────────────────────────────────────
-  function onMouseDown(e: React.MouseEvent) {
-    if ((e.target as HTMLElement).closest('button,input')) return;
+  // ── Drag (mouse + touch) ──────────────────────────────────────────────────
+  function startDrag(clientX: number, clientY: number) {
     dragRef.current = {
       ox: pos?.x ?? (window.innerWidth - 340),
       oy: pos?.y ?? (window.innerHeight - 460),
-      startX: e.clientX,
-      startY: e.clientY,
+      startX: clientX,
+      startY: clientY,
     };
+  }
+  function onMouseDown(e: React.MouseEvent) {
+    if ((e.target as HTMLElement).closest('button,input')) return;
+    startDrag(e.clientX, e.clientY);
     e.preventDefault();
   }
+  function onTouchStart(e: React.TouchEvent) {
+    if ((e.target as HTMLElement).closest('button,input')) return;
+    const t = e.touches[0];
+    startDrag(t.clientX, t.clientY);
+    // Don't preventDefault here — would block tap events on child elements
+  }
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
+    const applyDrag = (clientX: number, clientY: number) => {
       if (!dragRef.current) return;
       const w = windowRef.current?.offsetWidth ?? 320;
       const h = windowRef.current?.offsetHeight ?? 460;
       setPos({
-        x: Math.max(0, Math.min(window.innerWidth - w,  dragRef.current.ox + e.clientX - dragRef.current.startX)),
-        y: Math.max(0, Math.min(window.innerHeight - h, dragRef.current.oy + e.clientY - dragRef.current.startY)),
+        x: Math.max(0, Math.min(window.innerWidth - w,  dragRef.current.ox + clientX - dragRef.current.startX)),
+        y: Math.max(0, Math.min(window.innerHeight - h, dragRef.current.oy + clientY - dragRef.current.startY)),
       });
     };
-    const onUp = () => { dragRef.current = null; };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+    const onMove  = (e: MouseEvent)  => applyDrag(e.clientX, e.clientY);
+    const onUp    = ()               => { dragRef.current = null; };
+    const onTouch = (e: TouchEvent)  => { const t = e.touches[0]; if (t) applyDrag(t.clientX, t.clientY); };
+    const onTouchEnd = ()            => { dragRef.current = null; };
+    window.addEventListener('mousemove',  onMove);
+    window.addEventListener('mouseup',    onUp);
+    window.addEventListener('touchmove',  onTouch,   { passive: true });
+    window.addEventListener('touchend',   onTouchEnd);
+    return () => {
+      window.removeEventListener('mousemove',  onMove);
+      window.removeEventListener('mouseup',    onUp);
+      window.removeEventListener('touchmove',  onTouch);
+      window.removeEventListener('touchend',   onTouchEnd);
+    };
   }, []);
 
   // ── Derived state ──────────────────────────────────────────────────────────
@@ -207,6 +231,7 @@ export function DmCallWindow({
     <div
       className="flex items-center gap-2 px-3 py-2 cursor-grab active:cursor-grabbing"
       onMouseDown={onMouseDown}
+      onTouchStart={onTouchStart}
     >
       <span className={`w-2 h-2 rounded-full shrink-0 ${isActive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-pulse'}`} />
       <span className="text-[12px] font-medium text-ink-100 whitespace-nowrap">
@@ -231,7 +256,7 @@ export function DmCallWindow({
   const expanded = (
     <>
       {/* Header — drag zone */}
-      <div className="flex items-center justify-between px-3 pt-3 pb-2 cursor-grab active:cursor-grabbing" onMouseDown={onMouseDown}>
+      <div className="flex items-center justify-between px-3 pt-3 pb-2 cursor-grab active:cursor-grabbing" onMouseDown={onMouseDown} onTouchStart={onTouchStart}>
         <div className="flex items-center gap-1.5">
           <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-pulse'}`} />
           <span className="text-[11px] font-semibold text-ink-300 tracking-wide uppercase select-none">
@@ -404,8 +429,8 @@ export function DmCallWindow({
           {call.isVideoOff ? <IconCamOff /> : <IconCamOn />}
         </button>
 
-        {/* Screen share */}
-        {isActive && (
+        {/* Screen share — hidden on mobile/Android (getDisplayMedia not available) */}
+        {isActive && canScreenShare && (
           <button
             onClick={selfScreening ? onStopScreenShare : onScreenShare}
             title={selfScreening ? 'Stop sharing screen' : 'Share screen'}

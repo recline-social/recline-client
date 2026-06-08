@@ -252,8 +252,12 @@ function SparkPickerPortal({
 }
 
 // ── URL safety guard — prevents javascript: and data: URIs from server-supplied URLs ──
+// Server returns relative /uploads/ paths; these are safe (no XSS vector) and must be
+// allowed through so img/video/audio src and anchor href resolve correctly in the browser.
 function isSafeUrl(url: string | null | undefined): boolean {
   if (!url) return false;
+  // Relative /uploads/ paths are server-stored files — safe to use directly
+  if (url.startsWith('/uploads/')) return true;
   try {
     const u = new URL(url);
     return u.protocol === 'https:' || u.protocol === 'http:';

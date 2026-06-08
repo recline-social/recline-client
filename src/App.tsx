@@ -1978,9 +1978,34 @@ export default function App() {
 
     // DM AES-GCM keys are memory-only (non-extractable) — no sessionStorage persistence.
     // On page reload the key is re-derived from the ECDH key pair (cheap, ~1ms).
-    if (!dmKeyPairRef.current || !dmChannel.otherPublicKey) return null;
+    if (!dmKeyPairRef.current) return null;
+
+    // otherPublicKey can be null when the DM channel was loaded before the peer registered
+    // their ECDH key, or when the initial GET /api/dms was cached and the peer registered
+    // later.  Fetch fresh rather than silently failing — this unblocks the admin account
+    // DMing users who registered their key after the DM list was first loaded.
+    let peerKeyJwk = dmChannel.otherPublicKey;
+    if (!peerKeyJwk) {
+      try {
+        const { publicKey } = await api.getPeerPublicKey(dmChannel.otherUserId);
+        if (publicKey) {
+          peerKeyJwk = publicKey;
+          // Patch the cached channel so future calls (and dmsRef lookups) don't re-fetch
+          setDms((prev) => {
+            const next = prev.map((d) =>
+              d.id === dmChannel.id ? { ...d, otherPublicKey: publicKey } : d,
+            );
+            dmsRef.current = next;
+            return next;
+          });
+        }
+      } catch { /* non-fatal — peer may not have registered yet; return null below */ }
+    }
+
+    if (!peerKeyJwk) return null;
+
     try {
-      const peerKey = await importPeerPublicKey(dmChannel.otherPublicKey);
+      const peerKey = await importPeerPublicKey(peerKeyJwk);
       const aesKey = await deriveDmKey(dmKeyPairRef.current.privateKey, peerKey, dmChannel.id);
       cacheDmKey(dmChannel.id, aesKey);
       return aesKey;
@@ -2107,8 +2132,19 @@ export default function App() {
     const { dm } = await api.openDm(userId);
     const dmChannel: DmChannel = dm;
     setDms((prev) => {
-      if (prev.find((d) => d.id === dmChannel.id)) return prev;
-      return [dmChannel, ...prev];
+      const exists = prev.some((d) => d.id === dmChannel.id);
+      // Always refresh the peer's otherPublicKey from the fresh server response.
+      // If we just returned prev unchanged, a stale null key would persist — blocking
+      // encryption for any user who registered their key after we first loaded the DM list.
+      const next = exists
+        ? prev.map((d) => d.id === dmChannel.id
+            ? { ...d, otherPublicKey: dmChannel.otherPublicKey }
+            : d)
+        : [dmChannel, ...prev];
+      // Sync ref immediately so sendDmMessage sees the fresh key without waiting for
+      // the useEffect → re-render cycle to propagate the state update.
+      dmsRef.current = next;
+      return next;
     });
     // Pre-derive the DM key so encryption is ready before the user types
     getDmKey(dmChannel).catch(() => {});

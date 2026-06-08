@@ -203,10 +203,7 @@ export class CallManager {
     this.wantVideo = !!opts.video;
 
     try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
-        audio: AUDIO_CAPTURE_CONSTRAINTS,
-        video: this.wantVideo ? { width: 1280, height: 720 } : false,
-      });
+      this.localStream = await this._getUserMediaWithFallback(this.wantVideo);
     } catch (err) {
       this.channelId = null;
       this.localStream = null;
@@ -353,8 +350,56 @@ export class CallManager {
     return this.screenStream !== null;
   }
 
+  /**
+   * getUserMedia with an Android-safe fallback.
+   *
+   * Android hardware frequently rejects the rich AUDIO_CAPTURE_CONSTRAINTS
+   * (particularly sampleRate:48000 and stereo channelCount) with
+   * OverconstrainedError. We try the full quality set first; if the device
+   * refuses, we retry with the minimal set that every device supports.
+   * The original error is surfaced if both attempts fail.
+   *
+   * On mobile we also request facingMode:'user' so the front camera opens
+   * by default instead of the rear one.
+   */
+  private async _getUserMediaWithFallback(wantVideo: boolean): Promise<MediaStream> {
+    const videoConstraints: MediaTrackConstraints | false = wantVideo
+      ? { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'user' } }
+      : false;
+
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: AUDIO_CAPTURE_CONSTRAINTS,
+        video: videoConstraints,
+      });
+    } catch (firstErr) {
+      // Retry with baseline constraints — guaranteed to succeed on any device
+      // that has a working microphone/camera and the right manifest permissions.
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+          video: wantVideo ? { facingMode: { ideal: 'user' } } : false,
+        });
+      } catch {
+        // Neither set of constraints worked — throw the original error so the
+        // message ("Permission denied", "Overconstrained", etc.) is meaningful.
+        throw firstErr;
+      }
+    }
+  }
+
   async startScreenShare(opts: ScreenShareOptions = {}): Promise<MediaStream> {
     if (!this.channelId) throw new Error('Not in a call');
+    // getDisplayMedia is a desktop browser API — not available in Android WebView,
+    // iOS Safari, or most mobile browsers. The CallView already hides the button
+    // via canScreenShare, but guard here too so any direct call fails clearly.
+    if (typeof (navigator.mediaDevices as MediaDevices & { getDisplayMedia?: unknown })?.getDisplayMedia !== 'function') {
+      throw new Error('Screen sharing is not supported on this device');
+    }
     if (this.screenStream) return this.screenStream;
 
     const video: MediaTrackConstraints = {};
