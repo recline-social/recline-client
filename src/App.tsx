@@ -602,9 +602,17 @@ export default function App() {
     s.io.on('reconnect_attempt', onReconnectAttempt);
     s.on('connect_error', onConnectError);
     // AUTH-025: handle server-side session revocation (emitted by DELETE /api/auth/sessions
-    // and POST /api/auth/me/change-password). Disconnect the socket and log out so that
-    // other sessions lose real-time access immediately when revoked.
-    s.on('session:revoked', () => { logout(); });
+    // and POST /api/auth/me/change-password). Check if OUR token is still valid first —
+    // only log out if the server rejects our session with 401.
+    const onSessionRevoked = async () => {
+      try {
+        await api.me(); // succeeds → our session is still valid (a different session was revoked)
+      } catch {
+        // 401 → our session was revoked — log out immediately
+        logout();
+      }
+    };
+    s.on('session:revoked', onSessionRevoked);
     if (s.connected) setConnectionState('connected');
 
     const onMessage = async (msg: WireMessage) => {
@@ -1338,6 +1346,7 @@ export default function App() {
       s.off('disconnect', onDisconnect);
       s.io.off('reconnect_attempt', onReconnectAttempt);
       s.off('connect_error', onConnectError);
+      s.off('session:revoked', onSessionRevoked);
       s.off('message:new', onMessage);
       s.off('presence:update', onPresence);
       s.off('typing:start', onTypingStart);
