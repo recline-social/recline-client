@@ -23,6 +23,11 @@ type Props = {
   sparksBalance?: number;
   onSparksUpdate?: (balance: number) => void;
   initialTab?: Tab;
+  onSetDnd: (hours: number) => void;
+  onRevokeOtherSessions: () => void;
+  onExportData: () => void;
+  onDeleteAccount: (password: string) => void;
+  dmBackupOutOfSync?: boolean;
 };
 
 type Tab = 'profile' | 'security' | 'notifications' | 'sparks';
@@ -643,7 +648,7 @@ function KeyRotation({
 }
 
 // ── Notifications tab ─────────────────────────────────────────────────────────
-function NotificationsTab() {
+function NotificationsTab({ onSetDnd }: { onSetDnd: (hours: number) => void }) {
   const supported = notificationsSupported();
   const [permission, setPermission] = useState<NotificationPermission>(
     supported ? getNotificationPermission() : 'denied',
@@ -760,6 +765,29 @@ function NotificationsTab() {
           </div>
         )}
       </SectionCard>
+
+      <div className="mt-4">
+        <label className="block text-sm font-medium text-zinc-300 mb-1">Do Not Disturb</label>
+        <div className="flex gap-2 flex-wrap">
+          {[
+            { label: '1 hour', hours: 1 },
+            { label: '4 hours', hours: 4 },
+            { label: '8 hours', hours: 8 },
+            { label: 'Turn off', hours: 0 },
+          ].map(({ label, hours }) => (
+            <button
+              key={hours}
+              onClick={() => onSetDnd(hours)}
+              className="px-3 py-1.5 rounded-md text-sm bg-zinc-700 hover:bg-zinc-600 text-zinc-200"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-zinc-500 mt-1">
+          Mutes all push notifications for the selected duration.
+        </p>
+      </div>
     </div>
   );
 }
@@ -770,14 +798,24 @@ function SecurityTab({
   onUpdated,
   onRotateKey,
   onSyncKey,
+  onRevokeOtherSessions,
+  onExportData,
+  onDeleteAccount,
+  dmBackupOutOfSync,
 }: {
   me: User;
   onUpdated: (user: User) => void;
   onRotateKey: (password: string) => Promise<void>;
   onSyncKey: (password: string) => Promise<void>;
+  onRevokeOtherSessions: () => void;
+  onExportData: () => void;
+  onDeleteAccount: (password: string) => void;
+  dmBackupOutOfSync?: boolean;
 }) {
   type Panel = 'idle' | 'totp-setup' | 'totp-disable' | 'regen-codes' | 'rotate-key' | 'sync-key';
   const [panel, setPanel] = useState<Panel>('idle');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
 
   const totpEnabled = me.totpEnabled ?? false;
 
@@ -929,6 +967,11 @@ function SecurityTab({
             </div>
           </div>
         </div>
+        {dmBackupOutOfSync && (
+          <div className="mb-3 px-3 py-2 rounded-md bg-amber-900/40 border border-amber-700/40 text-xs text-amber-300">
+            ⚠ Key backup is out of sync. Re-enter your password and click "Rotate key" again to fix.
+          </div>
+        )}
         <div className="flex gap-2">
           <button
             onClick={() => setPanel('rotate-key')}
@@ -947,6 +990,78 @@ function SecurityTab({
           ⚠ Rotation protects future messages only. Past messages remain readable with your previous key.
         </p>
       </SectionCard>
+
+      {/* Sessions */}
+      <div className="mt-6 pt-6 border-t border-zinc-700">
+        <h3 className="text-sm font-medium text-zinc-300 mb-1">Sessions</h3>
+        <p className="text-xs text-zinc-500 mb-3">
+          Sign out of Recline on all other devices and browsers.
+        </p>
+        <button
+          onClick={onRevokeOtherSessions}
+          className="px-4 py-2 rounded-md text-sm bg-zinc-700 hover:bg-red-700/60 text-zinc-200"
+        >
+          Log out other devices
+        </button>
+      </div>
+
+      {/* Danger Zone */}
+      <div className="mt-6 pt-6 border-t border-red-900/40">
+        <h3 className="text-sm font-medium text-red-400 mb-1">Danger Zone</h3>
+
+        {/* Export data */}
+        <div className="mb-4">
+          <p className="text-xs text-zinc-500 mb-2">
+            Download a copy of all your Recline data (messages, profile, server memberships).
+          </p>
+          <button
+            onClick={onExportData}
+            className="px-4 py-2 rounded-md text-sm bg-zinc-700 hover:bg-zinc-600 text-zinc-200"
+          >
+            Export my data
+          </button>
+        </div>
+
+        {/* Delete account */}
+        <div>
+          <p className="text-xs text-zinc-500 mb-2">
+            Permanently delete your account. This cannot be undone.
+          </p>
+          {!showDeleteConfirm ? (
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              className="px-4 py-2 rounded-md text-sm bg-red-900/60 hover:bg-red-800 text-red-200"
+            >
+              Delete account
+            </button>
+          ) : (
+            <div className="space-y-2">
+              <input
+                type="password"
+                placeholder="Enter your password to confirm"
+                value={deletePassword}
+                onChange={e => setDeletePassword(e.target.value)}
+                className="w-full px-3 py-2 rounded-md bg-zinc-900 border border-zinc-600 text-sm text-zinc-100"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => onDeleteAccount(deletePassword)}
+                  disabled={!deletePassword}
+                  className="px-4 py-2 rounded-md text-sm bg-red-700 hover:bg-red-600 disabled:opacity-40 text-white"
+                >
+                  Confirm delete
+                </button>
+                <button
+                  onClick={() => { setShowDeleteConfirm(false); setDeletePassword(''); }}
+                  className="px-4 py-2 rounded-md text-sm bg-zinc-700 hover:bg-zinc-600 text-zinc-200"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1404,7 +1519,7 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
 }
 
 // ── Shell ─────────────────────────────────────────────────────────────────────
-export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, onSyncKey, isSupporter, sparksBalance, onSparksUpdate, initialTab }: Props) {
+export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, onSyncKey, isSupporter, sparksBalance, onSparksUpdate, initialTab, onSetDnd, onRevokeOtherSessions, onExportData, onDeleteAccount, dmBackupOutOfSync }: Props) {
   const [tab, setTab] = useState<Tab>('profile');
 
   useEffect(() => {
@@ -1440,10 +1555,19 @@ export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, onSyn
         <SparksTab balance={sparksBalance ?? 0} onSparksUpdate={onSparksUpdate} />
       )}
       {tab === 'security' && (
-        <SecurityTab me={me} onUpdated={onUpdated} onRotateKey={onRotateKey} onSyncKey={onSyncKey} />
+        <SecurityTab
+          me={me}
+          onUpdated={onUpdated}
+          onRotateKey={onRotateKey}
+          onSyncKey={onSyncKey}
+          onRevokeOtherSessions={onRevokeOtherSessions}
+          onExportData={onExportData}
+          onDeleteAccount={onDeleteAccount}
+          dmBackupOutOfSync={dmBackupOutOfSync}
+        />
       )}
       {tab === 'notifications' && (
-        <NotificationsTab />
+        <NotificationsTab onSetDnd={onSetDnd} />
       )}
     </Modal>
   );

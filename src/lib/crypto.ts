@@ -281,7 +281,7 @@ export async function decryptDmKeyBackup(blob: string, password: string): Promis
     // will re-import as non-extractable when storing to IndexedDB.
     const [publicKey, privateKey] = await Promise.all([
       crypto.subtle.importKey('jwk', pubJwk,  { name: 'ECDH', namedCurve: 'P-256' }, true,  []),
-      crypto.subtle.importKey('jwk', privJwk, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']),
+      crypto.subtle.importKey('jwk', privJwk, { name: 'ECDH', namedCurve: 'P-256' }, true,  ['deriveKey']),
     ]);
     return { publicKey, privateKey };
   } catch {
@@ -304,21 +304,19 @@ export async function exportPublicKeyJwk(publicKey: CryptoKey): Promise<string> 
  * only long enough to encrypt the backup, then this function stores it non-extractably.
  */
 export async function saveDmKeyPair(pair: CryptoKeyPair): Promise<void> {
-  try {
-    let privateKey = pair.privateKey;
-    if (privateKey.extractable) {
-      // Re-import as non-extractable so the stored key cannot be exfiltrated by XSS.
-      const privJwk = await crypto.subtle.exportKey('jwk', privateKey);
-      privateKey = await crypto.subtle.importKey(
-        'jwk', privJwk,
-        { name: 'ECDH', namedCurve: 'P-256' },
-        false,                          // NON-extractable
-        ['deriveKey', 'deriveBits'],    // CRYPTO-010: must NOT be [] — empty usages makes the key permanently unusable for ECDH operations
-      );
-    }
-    const pubJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
-    await idbSet('current', { pubJwk, privateKey });
-  } catch { /* non-fatal */ }
+  let privateKey = pair.privateKey;
+  if (privateKey.extractable) {
+    // Re-import as non-extractable so the stored key cannot be exfiltrated by XSS.
+    const privJwk = await crypto.subtle.exportKey('jwk', privateKey);
+    privateKey = await crypto.subtle.importKey(
+      'jwk', privJwk,
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,                          // NON-extractable
+      ['deriveKey', 'deriveBits'],    // CRYPTO-010: must NOT be [] — empty usages makes the key permanently unusable for ECDH operations
+    );
+  }
+  const pubJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+  await idbSet('current', { pubJwk, privateKey });
 }
 
 /** Load a previously saved key pair from IndexedDB. Returns null if none. */
@@ -452,14 +450,12 @@ export function clearAllDmKeys() {
 
 /** Archive the current keypair to history (called before rotation). */
 export async function archiveCurrentKeyPair(): Promise<void> {
-  try {
-    const current = await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }>('current');
-    if (!current) return;
-    const history = (await idbGet<typeof current[]>('history')) ?? [];
-    history.unshift(current); // newest first
-    if (history.length > DM_KEYPAIR_HISTORY_MAX) history.splice(DM_KEYPAIR_HISTORY_MAX);
-    await idbSet('history', history);
-  } catch { /* non-fatal */ }
+  const current = await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }>('current');
+  if (!current) return; // no key to archive — new user or after a wipe
+  const history = (await idbGet<typeof current[]>('history')) ?? [];
+  history.unshift(current); // newest first
+  if (history.length > DM_KEYPAIR_HISTORY_MAX) history.splice(DM_KEYPAIR_HISTORY_MAX);
+  await idbSet('history', history);
 }
 
 /**

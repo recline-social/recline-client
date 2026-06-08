@@ -330,6 +330,8 @@ export default function App() {
   const [dmSyncPw, setDmSyncPw] = useState('');
   const [dmSyncLoading, setDmSyncLoading] = useState(false);
   const [dmSyncErr, setDmSyncErr] = useState('');
+  // True when a backup upload failed during key rotation — signals degraded state to ProfileDialog
+  const [dmBackupOutOfSync, setDmBackupOutOfSync] = useState(false);
   const [dmHasMore, setDmHasMore] = useState<Record<string, boolean>>({});
   const [dmUnreadMap, setDmUnreadMap] = useState<Record<string, number>>({});
   // DM calls
@@ -415,6 +417,8 @@ export default function App() {
   const typingTimersRef = useRef<Map<string, number>>(new Map());
   // Guard against concurrent createChannel calls (double-click)
   const creatingChannelRef = useRef(false);
+  // Guard against concurrent key rotation calls
+  const rotatingRef = useRef(false);
 
   // refs so socket handlers always see fresh state (avoids stale closures
   // because the handlers are bound once when the socket connects).
@@ -1057,6 +1061,23 @@ export default function App() {
       }).catch(() => {});
     };
 
+    // friendship:incoming — server sends the requester's user ID as `id`
+    const onFriendshipIncoming = (data: { id: string; displayName: string; avatarUrl?: string | null }) => {
+      setFriends(prev => {
+        // data.id is the requester's userId — deduplicate by userId
+        if (prev.some(f => f.userId === data.id)) return prev;
+        return [...prev, {
+          id: `incoming:${data.id}`, // placeholder row ID until a full refresh
+          status: 'pending' as const,
+          direction: 'incoming' as const,
+          userId: data.id,
+          username: data.displayName, // username not sent; use displayName as fallback
+          displayName: data.displayName,
+          avatarUrl: data.avatarUrl ?? null,
+        }];
+      });
+    };
+
     s.on('message:new', onMessage);
     s.on('presence:update', onPresence);
     s.on('typing:start', onTypingStart);
@@ -1065,6 +1086,7 @@ export default function App() {
     s.on('member:joined', onMemberJoined);
     s.on('user:updated', onUserUpdated);
     s.on('friendship:accepted', onFriendshipAccepted);
+    s.on('friendship:incoming', onFriendshipIncoming);
     s.on('message:deleted', onMessageDeleted);
     s.on('member:kicked', onMemberKicked);
     s.on('server:deleted', onServerDeleted);
@@ -1324,6 +1346,7 @@ export default function App() {
       s.off('member:joined', onMemberJoined);
       s.off('user:updated', onUserUpdated);
       s.off('friendship:accepted', onFriendshipAccepted);
+      s.off('friendship:incoming', onFriendshipIncoming);
       s.off('message:deleted', onMessageDeleted);
       s.off('member:kicked', onMemberKicked);
       s.off('server:deleted', onServerDeleted);
@@ -1977,6 +2000,13 @@ export default function App() {
       try { return await decryptText(currentKey, ciphertext, nonce); } catch { /* fall through */ }
     }
 
+    // BUG 9: single lazy-loaded history cache — avoids calling loadDmKeyHistory() twice
+    let _history: CryptoKeyPair[] | null = null;
+    const getHistory = async () => {
+      if (!_history) _history = await loadDmKeyHistory();
+      return _history;
+    };
+
     // CRYPTO-006: sender's key at send-time differs from current peer key → derive
     // against that specific epoch using current and historical own private keys.
     if (senderEcdhPublicKey && senderEcdhPublicKey !== dmChannel.otherPublicKey) {
@@ -1989,7 +2019,7 @@ export default function App() {
             return await decryptText(k, ciphertext, nonce);
           } catch { /* fall through */ }
         }
-        const history = await loadDmKeyHistory();
+        const history = await getHistory();
         for (const oldPair of history) {
           try {
             const k = await deriveDmKey(oldPair.privateKey, snapshotKey, dmChannel.id);
@@ -2001,7 +2031,7 @@ export default function App() {
 
     // Original fallback: walk all archived own keys × current peer public key
     if (dmChannel.otherPublicKey) {
-      const history = await loadDmKeyHistory();
+      const history = await getHistory();
       if (history.length > 0) {
         const peerKey = await importPeerPublicKey(dmChannel.otherPublicKey);
         for (const oldPair of history) {
@@ -2011,6 +2041,21 @@ export default function App() {
           } catch { /* try next archived key */ }
         }
       }
+    }
+
+    // BUG 8: also try senderEcdhPublicKey (the peer's key at send time) against all our
+    // historical keys — handles the case where BOTH sides have rotated since the message was sent.
+    if (senderEcdhPublicKey && senderEcdhPublicKey !== dmChannel.otherPublicKey) {
+      try {
+        const senderKeyAtSendTime = await importPeerPublicKey(senderEcdhPublicKey);
+        const history2 = await getHistory();
+        for (const oldPair of history2) {
+          try {
+            const oldAesKey = await deriveDmKey(oldPair.privateKey, senderKeyAtSendTime, dmChannel.id);
+            return await decryptText(oldAesKey, ciphertext, nonce);
+          } catch { continue; }
+        }
+      } catch { /* importPeerPublicKey failed */ }
     }
 
     throw new Error('decrypt failed with all available keys');
@@ -2719,7 +2764,8 @@ export default function App() {
             setDmMsgLoaded({});
             const restoredJwk = await exportPublicKeyJwk(restored.publicKey);
             if (!jwkPointMatches(restoredJwk, serverKeyJwk)) {
-              await api.registerPublicKey(restoredJwk).catch(() => {});
+              // BUG 7: pass password so server can verify ownership before overwriting existing key
+              await api.registerPublicKey(restoredJwk, password).catch(() => {});
             }
             return;
           }
@@ -2782,40 +2828,132 @@ export default function App() {
     setDmMsgLoaded({});
     setDmMessages({});
     const pubJwk = await exportPublicKeyJwk(restored.publicKey);
-    await api.registerPublicKey(pubJwk).catch(() => {});
+    // BUG 6: pass password so the server can verify ownership before overwriting an existing key
+    await api.registerPublicKey(pubJwk, password).catch(() => {});
     setDmKeyMismatch(false);
+    // Clear backup-out-of-sync flag now that sync succeeded
+    setDmBackupOutOfSync(false);
     // M-7: Raw password is not cached in sessionStorage.
     // Key pair is already saved to IndexedDB by saveDmKeyPair above — no password cache needed.
   }
 
   async function handleRotateKey(password: string): Promise<void> {
-    // CRYPTO-012: server update must succeed BEFORE local state is committed.
-    // 1. Generate a new key pair (do not archive yet, do not touch dmKeyPairRef).
-    // 2. Export the public key JWK.
-    // 3. Push the new public key to the server — if this throws, abort entirely so
-    //    local and remote keys never desync.
-    // 4. Only on success: archive the old key, persist the new pair, update the ref,
-    //    and flush cached AES-GCM keys so they're re-derived from the new private key.
-    // CRYPTO-005: password is forwarded so the server can verify ownership before
-    //   overwriting an existing public key. Prevents stolen-session MITM attacks.
-    const newPair = await generateDmKeyPair();
-    const pubJwk = await exportPublicKeyJwk(newPair.publicKey);
-    await api.registerPublicKey(pubJwk, password); // throws on network/server error
-    // Server accepted the key — now commit locally
-    await archiveCurrentKeyPair();
-    // Export private key BEFORE saving (while still extractable — saveDmKeyPair re-imports as non-extractable)
-    const privJwkForBackup = await exportPrivateKeyJwk(newPair.privateKey);
-    await saveDmKeyPair(newPair);
-    dmKeyPairRef.current = newPair;
-    clearAllDmKeys();
-    // CRYPTO-014: upload new backup blob so other devices can restore the rotated key.
-    // Without this, any device that was synced before the rotation retains the old key
-    // and can no longer decrypt new DMs.
-    if (privJwkForBackup && password) {
-      try {
-        const blob = await encryptDmKeyBackup(privJwkForBackup, password);
-        await api.putDmKeyBackup(blob);
-      } catch { /* non-fatal — user can re-sync manually */ }
+    // BUG 1: concurrent invocation guard
+    if (rotatingRef.current) return;
+    rotatingRef.current = true;
+
+    // BUG 2: mark keys not ready during rotation so concurrent DM ops don't use a half-rotated key
+    setDmKeysReady(false);
+    // BUG 4: clear any previous backup-out-of-sync flag at the start of a new attempt
+    setDmBackupOutOfSync(false);
+
+    let newKeySaved = false;
+    try {
+      // BUG 5 (reordered): safe rotation order:
+      // 1. Generate a new key pair (nothing touched yet).
+      // 2. Export the public key JWK.
+      // 3. Archive the current key FIRST — if this throws, abort before touching anything.
+      // 4. Save the new key to IDB — if this throws, old key is in history.
+      // 5. Update the in-memory ref.
+      // 6. Push new public key to the server — if this fails, local state is correct; user can retry.
+      // 7. Clear AES cache, reset DM message state.
+      // 8. Upload backup (non-fatal).
+      const newPair = await generateDmKeyPair();
+      const pubJwk = await exportPublicKeyJwk(newPair.publicKey);
+
+      // Step 3: archive old key first
+      await archiveCurrentKeyPair();
+
+      // Export private key BEFORE saving (while still extractable — saveDmKeyPair re-imports as non-extractable)
+      const privJwkForBackup = await exportPrivateKeyJwk(newPair.privateKey);
+
+      // Step 4: persist new key to IDB
+      await saveDmKeyPair(newPair);
+      newKeySaved = true;
+
+      // Step 5: update in-memory ref
+      dmKeyPairRef.current = newPair;
+
+      // Step 6: register new public key on the server (password required to override existing key)
+      // CRYPTO-005: prevents stolen-session MITM attacks.
+      await api.registerPublicKey(pubJwk, password); // throws on network/server error
+
+      // Step 7: flush cached AES-GCM keys so they are re-derived from the new private key
+      clearAllDmKeys();
+      // BUG 3: mirror handleSyncDmKey — clear stale decrypted DM messages after rotation
+      setDmMsgLoaded({});
+      setDmMessages({});
+
+      // Step 8: upload new backup blob so other devices can restore the rotated key.
+      // CRYPTO-014: without this, any device synced before rotation retains the old key.
+      if (privJwkForBackup && password) {
+        try {
+          const blob = await encryptDmKeyBackup(privJwkForBackup, password);
+          await api.putDmKeyBackup(blob);
+        } catch {
+          // BUG 4: surface backup failure instead of swallowing it silently
+          setDmBackupOutOfSync(true);
+        }
+      }
+    } catch (err) {
+      // If the new key was never saved, re-enable keys so the user is not locked out
+      // (the old key pair is still valid — either in IDB or now in archive history).
+      // If it was saved but server registration failed, the user should retry rotation.
+      if (!newKeySaved) {
+        // Old key pair still intact — restore dmKeysReady so the user can still use DMs
+        setDmKeysReady(true);
+      }
+      throw err;
+    } finally {
+      rotatingRef.current = false;
+      // Only restore dmKeysReady here if the new key was saved successfully
+      if (newKeySaved) {
+        setDmKeysReady(true);
+      }
+    }
+  }
+
+  async function handleSetDnd(hours: number) {
+    try {
+      await api.setDnd(hours);
+    } catch (err) {
+      console.error('Failed to set DND', err);
+    }
+  }
+
+  async function handleRevokeOtherSessions() {
+    try {
+      await api.revokeOtherSessions();
+      // The server will emit 'session:revoked' to other devices.
+      // On this device, nothing changes.
+    } catch (err) {
+      console.error('Failed to revoke sessions', err);
+    }
+  }
+
+  async function handleExportData() {
+    try {
+      const blob = await api.exportMyData();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'recline-export.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to export data', err);
+    }
+  }
+
+  async function handleDeleteAccount(password: string) {
+    try {
+      await api.deleteMyAccount(password);
+      // Treat same as logout — clear all state
+      logout();
+    } catch (err) {
+      console.error('Failed to delete account', err);
     }
   }
 
@@ -3249,6 +3387,11 @@ export default function App() {
         isSupporter={isSupporter}
         sparksBalance={sparksBalance}
         onSparksUpdate={setSparksBalance}
+        dmBackupOutOfSync={dmBackupOutOfSync}
+        onSetDnd={handleSetDnd}
+        onRevokeOtherSessions={handleRevokeOtherSessions}
+        onExportData={handleExportData}
+        onDeleteAccount={handleDeleteAccount}
       />
       {activeServer && settingsOpen && (
         <ServerSettingsDialog

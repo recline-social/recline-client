@@ -275,6 +275,23 @@ export const api = {
 
   logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
 
+  revokeOtherSessions: () =>
+    request<{ ok: boolean }>('/api/auth/sessions', { method: 'DELETE' }),
+
+  exportMyData: async () => {
+    const res = await fetch(`${getServerUrl() || ''}/api/auth/me/export`, {
+      headers: { Authorization: `Bearer ${getToken() ?? ''}` },
+    });
+    if (!res.ok) throw new Error('Export failed');
+    return res.blob();
+  },
+
+  deleteMyAccount: (password: string) =>
+    request<{ ok: boolean }>('/api/auth/me', {
+      method: 'DELETE',
+      body: JSON.stringify({ password }),
+    }),
+
   /** Recover access using a backup code — resets password, invalidates all sessions. */
   resetPassword: (body: { username: string; backupCode: string; newPassword: string }) =>
     request<{ ok: boolean }>('/api/auth/reset-password', {
@@ -423,7 +440,13 @@ export const api = {
     request<{ ok: boolean }>('/api/push/subscribe', { method: 'POST', body: JSON.stringify(sub) }),
 
   unsubscribePush: (endpoint: string) =>
-    request<{ ok: boolean }>('/api/push/unsubscribe', { method: 'DELETE', body: JSON.stringify({ endpoint }) }),
+    request<{ ok: boolean }>('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint }) }),
+
+  setDnd: (hours: number) =>
+    request<{ ok: boolean }>('/api/users/me/dnd', {
+      method: 'PATCH',
+      body: JSON.stringify({ hours }),
+    }),
 
   // ── Channels ──────────────────────────────────────────────────────────────
   deleteChannel: (serverId: string, channelId: string) =>
@@ -535,6 +558,15 @@ export const api = {
 
   removeFriend: (id: string) =>
     request<{ ok: boolean }>(`/api/friends/${id}`, { method: 'DELETE' }),
+
+  blockUser: (id: string) =>
+    request<{ ok: boolean }>(`/api/users/${id}/block`, { method: 'POST' }),
+
+  unblockUser: (id: string) =>
+    request<{ ok: boolean }>(`/api/users/${id}/block`, { method: 'DELETE' }),
+
+  listBlocked: () =>
+    request<{ id: string; displayName: string; avatarUrl: string | null }[]>('/api/users/blocked'),
 
   // ── Roles ─────────────────────────────────────────────────────────────────
   listRoles: (serverId: string) =>
