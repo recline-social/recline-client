@@ -276,35 +276,106 @@ function unb64(s: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
+// Backups can carry more archived keys than the device keeps live — they're the
+// only durable copy of pre-rotation keys (device history is wiped on logout).
+const BACKUP_HISTORY_MAX = 10;
+
 /**
  * Encrypt a private key JWK with the user's password.
  * Returns a JSON string suitable for server storage — the server sees only opaque ciphertext.
+ *
+ * v3: `historyPrivJwks` chains previous (pre-rotation) private keys into the blob so
+ * a device restoring the backup can still decrypt messages from older key epochs.
+ * Without this, rotating then logging out anywhere made old messages permanently
+ * unreadable (device history is non-extractable and wiped by clearAllDmKeys).
  */
-export async function encryptDmKeyBackup(privJwk: JsonWebKey, password: string): Promise<string> {
+export async function encryptDmKeyBackup(
+  privJwk: JsonWebKey,
+  password: string,
+  historyPrivJwks: JsonWebKey[] = [],
+): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv   = crypto.getRandomValues(new Uint8Array(12));
   const key  = await deriveBackupKey(password, salt);
+  const payload = { priv: privJwk, history: historyPrivJwks.slice(0, BACKUP_HISTORY_MAX) };
   const ct   = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
     key,
-    new TextEncoder().encode(JSON.stringify(privJwk)),
+    new TextEncoder().encode(JSON.stringify(payload)),
   );
-  return JSON.stringify({ v: 2, salt: b64(salt), iv: b64(iv), ct: b64(ct) });
+  return JSON.stringify({ v: 3, salt: b64(salt), iv: b64(iv), ct: b64(ct) });
+}
+
+/**
+ * Decrypt a backup blob to raw JWKs (current private key + chained history).
+ * Returns null if the password is wrong or the blob is corrupt.
+ * v1/v2 blobs hold a bare private JWK; v3 holds { priv, history }.
+ */
+export async function decryptDmKeyBackupJwks(
+  blob: string,
+  password: string,
+): Promise<{ priv: JsonWebKey; history: JsonWebKey[] } | null> {
+  try {
+    const { v, salt, iv, ct } = JSON.parse(blob) as { v: number; salt: string; iv: string; ct: string };
+    if (v !== 1 && v !== 2 && v !== 3) return null;
+    // v1 backups used 200k iterations; v2+ use 600k. Pass explicit count for v1 compatibility.
+    const iters    = v === 1 ? 200_000 : 600_000;
+    const key      = await deriveBackupKey(password, unb64(salt), iters);
+    const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv) }, key, unb64(ct));
+    const parsed   = JSON.parse(new TextDecoder().decode(plainBuf));
+    if (v === 3) {
+      return {
+        priv: parsed.priv as JsonWebKey,
+        history: Array.isArray(parsed.history) ? (parsed.history as JsonWebKey[]) : [],
+      };
+    }
+    return { priv: parsed as JsonWebKey, history: [] };
+  } catch {
+    return null;
+  }
+}
+
+/** Import a backup history JWK as a non-extractable IDB history entry. */
+async function importHistoryEntry(privJwk: JsonWebKey): Promise<{ pubJwk: JsonWebKey; privateKey: CryptoKey }> {
+  const pubJwk: JsonWebKey = { kty: privJwk.kty, crv: privJwk.crv, x: privJwk.x, y: privJwk.y };
+  const privateKey = await crypto.subtle.importKey(
+    'jwk', privJwk, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey', 'deriveBits'],
+  );
+  return { pubJwk, privateKey };
+}
+
+/** Merge backup-chained history keys into the device's IndexedDB key history
+ *  (deduped by public-key point, non-extractable). Non-fatal on any failure. */
+async function mergeBackupHistory(historyJwks: JsonWebKey[]): Promise<void> {
+  if (!historyJwks.length) return;
+  try {
+    const existing = (await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }[]>('history')) ?? [];
+    const seen = new Set(existing.map((e) => `${e.pubJwk.x}:${e.pubJwk.y}`));
+    let changed = false;
+    for (const jwk of historyJwks) {
+      const point = `${jwk.x}:${jwk.y}`;
+      if (seen.has(point)) continue;
+      try {
+        existing.push(await importHistoryEntry(jwk));
+        seen.add(point);
+        changed = true;
+      } catch { /* corrupt entry — skip */ }
+    }
+    if (changed) await idbSet('history', existing.slice(0, BACKUP_HISTORY_MAX));
+  } catch { /* IDB unavailable — history stays backup-only */ }
 }
 
 /**
  * Decrypt a backup blob and reconstruct the full CryptoKeyPair.
  * Returns null if the password is wrong or the blob is corrupt.
+ * Side effect: any history keys chained into a v3 blob are merged into the
+ * device's IndexedDB key history so old-epoch messages decrypt after restore.
  */
 export async function decryptDmKeyBackup(blob: string, password: string): Promise<CryptoKeyPair | null> {
+  const jwks = await decryptDmKeyBackupJwks(blob, password);
+  if (!jwks) return null;
   try {
-    const { v, salt, iv, ct } = JSON.parse(blob) as { v: number; salt: string; iv: string; ct: string };
-    if (v !== 1 && v !== 2) return null;
-    // v1 backups used 200k iterations; v2 uses 600k. Pass explicit count for v1 compatibility.
-    const iters    = v === 1 ? 200_000 : 600_000;
-    const key      = await deriveBackupKey(password, unb64(salt), iters);
-    const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv) }, key, unb64(ct));
-    const privJwk  = JSON.parse(new TextDecoder().decode(plainBuf)) as JsonWebKey;
+    const privJwk = jwks.priv;
     // Reconstruct the public key from the private JWK — P-256 JWKs carry x and y.
     const pubJwk: JsonWebKey = { kty: privJwk.kty, crv: privJwk.crv, x: privJwk.x, y: privJwk.y };
     // Import the restored key pair. Public key is extractable (needed for JWK upload).
@@ -315,6 +386,7 @@ export async function decryptDmKeyBackup(blob: string, password: string): Promis
       crypto.subtle.importKey('jwk', pubJwk,  { name: 'ECDH', namedCurve: 'P-256' }, true,  []),
       crypto.subtle.importKey('jwk', privJwk, { name: 'ECDH', namedCurve: 'P-256' }, true,  ['deriveKey']),
     ]);
+    await mergeBackupHistory(jwks.history);
     return { publicKey, privateKey };
   } catch {
     return null;
@@ -410,9 +482,46 @@ export function checkPeerKeyTofu(userId: string, jwkString: string): 'first' | '
   }
 }
 
-/** Re-pin a peer key after the user confirms a legitimate rotation. */
+// Previously accepted keys for a peer (newest first). When a pin is replaced via
+// repinPeerKey, the outgoing key is archived here so historical messages whose
+// send-time key snapshot (CRYPTO-006) references it still count as verified.
+const TOFU_ACCEPTED_PREFIX = 'recline.tofu.peerkey.accepted.';
+const TOFU_ACCEPTED_MAX = 10;
+
+/** Re-pin a peer key after the user confirms a legitimate rotation.
+ *  The previous pin is archived to the accepted-keys list, not discarded. */
 export function repinPeerKey(userId: string, jwkString: string): void {
-  try { localStorage.setItem(TOFU_PREFIX + userId, jwkString); } catch { /* ignore */ }
+  try {
+    const k = TOFU_PREFIX + userId;
+    const prev = localStorage.getItem(k);
+    if (prev && prev !== jwkString) {
+      const ak = TOFU_ACCEPTED_PREFIX + userId;
+      let list: string[] = [];
+      try { list = JSON.parse(localStorage.getItem(ak) ?? '[]'); } catch { list = []; }
+      if (!Array.isArray(list)) list = [];
+      if (!list.includes(prev)) {
+        list.unshift(prev);
+        localStorage.setItem(ak, JSON.stringify(list.slice(0, TOFU_ACCEPTED_MAX)));
+      }
+    }
+    localStorage.setItem(k, jwkString);
+  } catch { /* ignore */ }
+}
+
+/** Whether a peer public key matches the current TOFU pin or a previously accepted
+ *  (pre-rotation) key for that peer. Used to gate the CRYPTO-006 snapshot-key
+ *  decryption fallback: a malicious server can attach ANY senderEcdhPublicKey to a
+ *  message and forge ciphertext that decrypts against it (it knows our public key
+ *  and the channel ID), so snapshot keys that match nothing we've ever pinned must
+ *  be surfaced as unverified rather than silently trusted. */
+export function isPeerKeyKnown(userId: string, jwkString: string): boolean {
+  try {
+    if (localStorage.getItem(TOFU_PREFIX + userId) === jwkString) return true;
+    const list = JSON.parse(localStorage.getItem(TOFU_ACCEPTED_PREFIX + userId) ?? '[]');
+    return Array.isArray(list) && list.includes(jwkString);
+  } catch {
+    return true; // storage unavailable — fail open, consistent with checkPeerKeyTofu
+  }
 }
 
 /**

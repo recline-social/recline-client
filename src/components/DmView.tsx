@@ -345,6 +345,9 @@ function DmMessageRow({ msg, dm, me, showHeader, onReact, onReply, onEdit, onDel
             {msg.isPlaintext && !msg.failed && (
               <span className="text-[10px] text-amber-400/70 ml-1" title="This message was not end-to-end encrypted">⚠ unencrypted</span>
             )}
+            {msg.unverifiedKey && !msg.failed && (
+              <span className="text-[10px] text-amber-400/70 ml-1" title="Encrypted with a key that doesn't match any key you've verified for this contact. It may be an old key from before you first talked — or someone impersonating them. Verify their fingerprint out-of-band.">⚠ unverified key</span>
+            )}
           </div>
         )}
 
@@ -522,18 +525,45 @@ export function DmView({
   const isEncrypted = !!dm.otherPublicKey;
   const isOnline = online.has(dm.otherUserId);
 
-  // Scroll to bottom on new messages
+  // Autoscroll bookkeeping: only follow new messages when the user is already near
+  // the bottom (or sent the message themselves) — receiving a message while reading
+  // history must not yank the view down, and deletions must not scroll at all.
+  const nearBottomRef = useRef(true);
+  const prevMsgCountRef = useRef(0);
+  const lastDmIdRef = useRef<string | null>(null);
+
+  function handleScroll() {
+    const el = containerRef.current;
+    if (!el) return;
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }
+
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    // Switched conversations — always start pinned to the bottom.
+    if (lastDmIdRef.current !== dm.id) {
+      lastDmIdRef.current = dm.id;
+      nearBottomRef.current = true;
+      prevMsgCountRef.current = messages.length;
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
     if (loadingMoreRef.current) {
       el.scrollTop = el.scrollHeight - prevScrollHeightRef.current;
       loadingMoreRef.current = false;
-    } else {
+      prevMsgCountRef.current = messages.length;
+      return;
+    }
+    const grew = messages.length > prevMsgCountRef.current;
+    prevMsgCountRef.current = messages.length;
+    if (!grew) return; // deletion or clear — keep the current position
+    const last = messages[messages.length - 1];
+    if (nearBottomRef.current || last?.senderId === me.id) {
       el.scrollTop = el.scrollHeight;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages.length]);
+  }, [messages.length, dm.id]);
 
   // Focus composer when replying
   useEffect(() => {
@@ -721,7 +751,7 @@ export function DmView({
       {call && call.status !== 'incoming-ringing' && <DmCallBar call={call} />}
 
       {/* ── Messages ─────────────────────────────────────────────────────── */}
-      <div ref={containerRef} className="flex-1 min-h-0 overflow-y-auto py-4">
+      <div ref={containerRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-y-auto py-4">
         {hasMore && (
           <div className="flex justify-center pb-2 px-5">
             <button onClick={handleLoadMore} disabled={loadingMore}
@@ -870,7 +900,7 @@ export function DmView({
         ) : (
           <div className="text-[10px] mt-1 px-1">
             {isEncrypted
-              ? <span className="text-emerald-500/70">ECDH P-256 + HKDF-SHA256 + AES-GCM-256 · server sees only ciphertext</span>
+              ? <span className="text-emerald-500/70">ECDH P-256 + HKDF-SHA256 + AES-GCM-256 · text is E2E encrypted · file attachments are not</span>
               : <span className="text-amber-500/70">Waiting for peer to register encryption key</span>}
           </div>
         )}

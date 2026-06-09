@@ -216,6 +216,9 @@ export type DmMessage = DmWireMessage & {
   failed?: boolean;
   /** True for legacy messages that arrived as plaintext (no ciphertext/nonce) — not E2E encrypted. */
   isPlaintext?: boolean;
+  /** True when the message only decrypted via a sender-key snapshot that matches no
+   *  key ever pinned/accepted for this peer (TOFU) — possible server-side forgery. */
+  unverifiedKey?: boolean;
   /** Emoji reactions on this message. */
   reactions?: DmReaction[];
   /** Reply preview — populated client-side by looking up the replied-to message in local state. */
