@@ -458,6 +458,16 @@ export const api = {
       body: JSON.stringify({ scopeType, scopeId, muted }),
     }),
 
+  // ── Unread cursors (FEAT-033) ─────────────────────────────────────────────
+  getUnread: () =>
+    request<{ channels: Record<string, number>; dms: Record<string, number> }>('/api/unread'),
+
+  markChannelRead: (channelId: string) =>
+    request<{ ok: boolean }>(`/api/channels/${channelId}/read`, { method: 'PUT' }),
+
+  markDmRead: (dmChannelId: string) =>
+    request<{ ok: boolean }>(`/api/dms/${dmChannelId}/read`, { method: 'PUT' }),
+
   // ── Channels ──────────────────────────────────────────────────────────────
   deleteChannel: (serverId: string, channelId: string) =>
     request<{ ok: boolean }>(`/api/servers/${serverId}/channels/${channelId}`, { method: 'DELETE' }),

@@ -1,4 +1,5 @@
 import type { Socket } from 'socket.io-client';
+import { createNoiseSuppressionPipeline, type NoiseSuppressionPipeline } from './noiseSuppression';
 
 export type StreamKind = 'camera' | 'screen';
 
@@ -165,6 +166,20 @@ export class CallManager {
   private makingOffer = new Map<string, boolean>();
   // screen-on events that arrived for a peer we haven't created yet
   private pendingScreensBySocketId = new Map<string, Set<string>>();
+  // RNNoise mic processing — rawMicTrack is the device capture; localStream
+  // carries the PROCESSED track (what peers receive). Raw track must be
+  // stopped separately on leave or the mic stays hot.
+  private rawMicTrack: MediaStreamTrack | null = null;
+  private nsPipeline: NoiseSuppressionPipeline | null = null;
+  private nsEnabled = CallManager.loadNsPreference();
+
+  private static loadNsPreference(): boolean {
+    try {
+      return localStorage.getItem('recline:nsEnabled') !== '0';
+    } catch {
+      return true;
+    }
+  }
 
   constructor(socket: Socket, events: Events) {
     this.socket = socket;
@@ -210,6 +225,9 @@ export class CallManager {
       this.events.onLocalStream(null);
       throw err;
     }
+    // Route the mic through RNNoise BEFORE the stream is handed to React or
+    // any RTCPeerConnection — peers must only ever see the processed track.
+    await this._setupMicProcessing();
     this.events.onLocalStream(this.localStream);
 
     const existing = await new Promise<{
@@ -291,6 +309,16 @@ export class CallManager {
       this.localStream.getTracks().forEach((t) => t.stop());
       this.localStream = null;
     }
+    if (this.nsPipeline) {
+      void this.nsPipeline.dispose();
+      this.nsPipeline = null;
+    }
+    if (this.rawMicTrack) {
+      // The processed track was stopped above; the raw capture track is not in
+      // localStream and must be stopped explicitly to release the microphone.
+      this.rawMicTrack.stop();
+      this.rawMicTrack = null;
+    }
     if (this.screenStream) {
       this.screenStream.getTracks().forEach((t) => t.stop());
       this.screenStream = null;
@@ -327,19 +355,65 @@ export class CallManager {
   }
 
   /**
-   * Toggle browser-native noise suppression + echo cancellation on the live
-   * audio track. Applies applyConstraints() on the captured track; Chrome and
-   * Edge support this at runtime. Other browsers silently ignore unsupported
-   * constraints — they stay on their previous setting, which is fine.
+   * Wrap the captured mic track in the RNNoise pipeline. On success,
+   * `localStream` is rebuilt around the processed track and the raw capture
+   * track is retained separately for cleanup. On failure (no AudioWorklet,
+   * wasm fetch blocked, etc.) the raw track stays in place and the toggle
+   * falls back to browser-native suppression.
+   */
+  private async _setupMicProcessing(): Promise<void> {
+    const raw = this.localStream?.getAudioTracks()[0];
+    if (!raw || !this.localStream) return;
+    try {
+      const pipeline = await createNoiseSuppressionPipeline(raw, this.nsEnabled);
+      this.rawMicTrack = raw;
+      this.nsPipeline = pipeline;
+      this.localStream = new MediaStream([
+        pipeline.processedTrack,
+        ...this.localStream.getVideoTracks(),
+      ]);
+      // RNNoise owns denoising now — turn native NS off so the model gets an
+      // unmangled signal. Echo cancellation + auto-gain stay on regardless:
+      // RNNoise removes noise, not echo, and disabling AGC tanks quiet mics.
+      try {
+        await raw.applyConstraints({
+          noiseSuppression: false,
+          echoCancellation: true,
+          autoGainControl: true,
+        });
+      } catch { /* runtime constraint changes unsupported — capture already has EC/AGC on */ }
+    } catch (err) {
+      console.error('[webrtc] RNNoise unavailable — falling back to native noise suppression', err);
+    }
+  }
+
+  /** Current noise suppression preference (persisted across calls/sessions). */
+  getNoiseSuppression(): boolean {
+    return this.nsEnabled;
+  }
+
+  /**
+   * Toggle noise suppression on the live mic. With the RNNoise pipeline this
+   * re-wires the audio graph instantly (no renegotiation, peers keep the same
+   * track). Without it, falls back to the browser-native constraint. Echo
+   * cancellation and auto-gain are never touched by this toggle.
    */
   async setNoiseSuppression(enabled: boolean): Promise<void> {
+    this.nsEnabled = enabled;
+    try { localStorage.setItem('recline:nsEnabled', enabled ? '1' : '0'); } catch { /* private mode */ }
+
+    if (this.nsPipeline) {
+      this.nsPipeline.setEnabled(enabled);
+      return;
+    }
+    // Fallback path: no pipeline — toggle native suppression on the live track.
     const track = this.localStream?.getAudioTracks()[0];
     if (!track) return;
     try {
       await track.applyConstraints({
         noiseSuppression: enabled,
-        echoCancellation: enabled,
-        autoGainControl: enabled,
+        echoCancellation: true,
+        autoGainControl: true,
       });
     } catch {
       // Not all browsers support runtime constraint changes — fail silently.

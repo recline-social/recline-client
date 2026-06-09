@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FC, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FC, type MutableRefObject } from 'react';
 import type { Socket } from 'socket.io-client';
 import { Auth } from './components/Auth';
 import { ServerRail } from './components/ServerRail';
@@ -480,6 +480,21 @@ export default function App() {
     return undefined;
   }
 
+  // FEAT-033: push the read cursor to the server whenever a channel/DM is
+  // viewed. Throttled per-target (5 s) — viewing fires from several paths
+  // (select, refocus, live message while focused) and the upsert is
+  // monotonic server-side, so dropping intermediate writes is harmless.
+  const lastReadSentRef = useRef<Record<string, number>>({});
+  const persistRead = useCallback((kind: 'channel' | 'dm', id: string) => {
+    const key = `${kind}:${id}`;
+    const now = Date.now();
+    if ((lastReadSentRef.current[key] ?? 0) > now - 5_000) return;
+    lastReadSentRef.current[key] = now;
+    (kind === 'channel' ? api.markChannelRead(id) : api.markDmRead(id)).catch(() => {
+      delete lastReadSentRef.current[key]; // failed — let the next trigger retry
+    });
+  }, []);
+
   // when the tab regains visibility, treat the active channel/DM as read
   useEffect(() => {
     const handler = () => {
@@ -487,14 +502,17 @@ export default function App() {
       const channelId = activeChannelIdRef.current;
       if (channelId) {
         setUnread((prev) => (prev[channelId] ? { ...prev, [channelId]: 0 } : prev));
+        persistRead('channel', channelId);
       }
       const dmId = activeDmIdRef.current;
       if (dmId && viewRef.current === 'dm') {
         setDmUnreadMap((prev) => (prev[dmId] ? { ...prev, [dmId]: 0 } : prev));
+        persistRead('dm', dmId);
       }
     };
     document.addEventListener('visibilitychange', handler);
     return () => document.removeEventListener('visibilitychange', handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Wire 401 → auto-logout so expired/revoked sessions are handled for all API calls (M-2)
@@ -681,6 +699,10 @@ export default function App() {
         activeChannelIdRef.current === msg.channelId && document.visibilityState === 'visible';
       if (!isFocused && msg.senderId !== userRef.current?.id) {
         setUnread((prev) => ({ ...prev, [msg.channelId]: (prev[msg.channelId] ?? 0) + 1 }));
+      } else if (isFocused) {
+        // Viewing the channel as the message lands — advance the server cursor
+        // so this message isn't counted as unread after a reload.
+        persistRead('channel', msg.channelId);
       }
 
       // Desktop notification when tab is hidden and message is from someone else.
@@ -1006,6 +1028,10 @@ export default function App() {
       // Unread badge + browser notification when not focused on this DM
       if (decoded.senderId !== userRef.current?.id) {
         const isFocused = activeDmIdRef.current === decoded.dmChannelId && viewRef.current === 'dm' && document.visibilityState === 'visible';
+        if (isFocused) {
+          // Viewing the DM as the message lands — advance the server cursor.
+          persistRead('dm', decoded.dmChannelId);
+        }
         if (!isFocused) {
           setDmUnreadMap((prev) => ({ ...prev, [decoded.dmChannelId]: (prev[decoded.dmChannelId] ?? 0) + 1 }));
           // Desktop notification
@@ -1461,6 +1487,13 @@ export default function App() {
     api.listFriends().then((r) => setFriends(r.friends)).catch(() => {});
     // Pre-fetch blocked-user list so block state is reflected across the UI
     api.listBlocked().then((r) => setBlockedUserIds(new Set(r.blocks.map((b) => b.id)))).catch(() => {});
+    // Seed unread badges from the server-side read cursors (FEAT-033) so
+    // unread state survives reloads and device switches. Live increments
+    // after this point stay socket-driven (message:new handlers).
+    api.getUnread().then((r) => {
+      setUnread((prev) => ({ ...r.channels, ...prev }));
+      setDmUnreadMap((prev) => ({ ...r.dms, ...prev }));
+    }).catch(() => {});
     // Pre-fetch notification mutes (FEAT-040)
     api.getMutes().then((r) => {
       const servers = new Set<string>();
@@ -1591,6 +1624,7 @@ export default function App() {
     loadDmMessages(activeDmId);
     // Clear unread when switching to this DM
     setDmUnreadMap((prev) => prev[activeDmId] ? { ...prev, [activeDmId]: 0 } : prev);
+    persistRead('dm', activeDmId);
 
     // Proactively refresh otherPublicKey when it's null — this fires every time the
     // user clicks a DM in the sidebar (setActiveDmId without calling openDm), so stale
@@ -2627,6 +2661,33 @@ export default function App() {
     socketRef.current?.emit('dm:typing:start', dmChannelId);
   }
 
+  /**
+   * Build a SPECIFIC error message when DM encryption is impossible. getDmKey
+   * collapses several distinct causes into `null`; surfacing which one actually
+   * happened turns "weird, DMs just don't work" into an actionable message.
+   */
+  async function describeDmKeyFailure(dmChannel: DmChannel | undefined): Promise<string> {
+    const prefix = 'Unable to encrypt message — ';
+    if (!dmChannel) return prefix + 'this conversation failed to load. Try reloading.';
+    if (!dmKeyPairRef.current) return prefix + 'your encryption keys are still loading. Try again in a few seconds.';
+    try {
+      const { publicKey } = await api.getPeerPublicKey(dmChannel.otherUserId);
+      if (!publicKey) {
+        return prefix + `${dmChannel.otherDisplayName} hasn't set up encryption yet. They need to log in once first.`;
+      }
+      return prefix + 'key derivation failed. Try reloading.';
+    } catch (err) {
+      const status = (err as Error & { status?: number })?.status;
+      if (status === 404) {
+        return prefix + `${dmChannel.otherDisplayName} hasn't set up encryption yet. They need to log in once first.`;
+      }
+      if (status === 403) {
+        return prefix + `the server blocked access to ${dmChannel.otherDisplayName}'s key: ${(err as Error).message}`;
+      }
+      return prefix + `couldn't fetch ${dmChannel.otherDisplayName}'s key (${(err as Error).message}). Check your connection and try again.`;
+    }
+  }
+
   async function sendDmMessage(dmId: string, text: string, file?: { fileUrl: string; fileName: string; fileSize: number; fileType: string }, replyToId?: string | null) {
     // Race guard: setupDmKeys runs concurrently with listDms on load — wait up to 8 s
     // for the key pair to materialise before giving up.  Covers the window between
@@ -2653,7 +2714,7 @@ export default function App() {
         await api.sendDmMessage(dmId, { ciphertext, nonce, ...fileFields, ...replyField });
       } else {
         console.error('[sendDmMessage] no DM key available — refusing to send plaintext');
-        throw new Error('Unable to encrypt message — DM key not available. Try reloading.');
+        throw new Error(await describeDmKeyFailure(dmChannel));
       }
     } else if (file) {
       // File-only message — no text body
@@ -2714,6 +2775,7 @@ export default function App() {
   function selectChannel(channel: Channel) {
     setActiveChannelId(channel.id);
     setUnread((prev) => (prev[channel.id] ? { ...prev, [channel.id]: 0 } : prev));
+    persistRead('channel', channel.id);
     if (channel.type === 'voice') {
       // Sync inCall with whether the manager is actually in this voice channel.
       setInCall(callManagerRef.current?.isInCall(channel.id) ?? false);
@@ -2793,6 +2855,7 @@ export default function App() {
     setDmMsgLoaded({});
     setDmKeysReady(false);
     setDmUnreadMap({});
+    lastReadSentRef.current = {};
     setView('server');
     setFriends([]);
     setBlockedUserIds(new Set());

@@ -179,7 +179,7 @@ export function CallView({
   // key of the tile currently pinned to the featured (large) position — null = auto layout
   const [pinnedKey, setPinnedKey] = useState<string | null>(null);
   // Noise suppression — on by default; toggle lets streamers/musicians pass audio raw
-  const [nsOn, setNsOn] = useState(true);
+  const [nsOn, setNsOn] = useState(() => manager.getNoiseSuppression());
 
   const speaking = useSpeakingDetection(localStream, me.id, peers);
 
