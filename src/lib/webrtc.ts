@@ -792,11 +792,33 @@ export class CallManager {
   // ICE restart — creates a new offer with iceRestart:true to get fresh TURN
   // candidates. Fixes calls dropping when TURN allocations expire (~10-15 min
   // on most free-tier servers) or when a transient network blip kills the relay.
+  /** REL-023: pull fresh ICE servers (new time-limited TURN creds) from the
+   *  server so an ICE restart isn't gathering candidates against expired creds. */
+  private async refreshIceServers(): Promise<void> {
+    try {
+      const fresh = await new Promise<RTCIceServer[] | null>((resolve) => {
+        const t = setTimeout(() => resolve(null), 5_000);
+        this.socket.emit('call:ice-servers', (resp: { iceServers?: RTCIceServer[] }) => {
+          clearTimeout(t);
+          resolve(resp?.iceServers ?? null);
+        });
+      });
+      if (fresh?.length) this.iceServers = fresh;
+    } catch { /* keep existing iceServers */ }
+  }
+
   private async attemptIceRestart(peer: Peer) {
     if (!this.channelId || !this.callToken) return;
     peer.iceRestartAttempts++;
     console.info(`[webrtc] ICE restart attempt ${peer.iceRestartAttempts} for ${peer.socketId}`);
     try {
+      // Refresh TURN credentials, then push them onto the existing connection so
+      // the restart gathers relay candidates against valid creds.
+      await this.refreshIceServers();
+      try {
+        const cfg = peer.pc.getConfiguration();
+        peer.pc.setConfiguration({ ...cfg, iceServers: this.iceServers });
+      } catch { /* setConfiguration unsupported on some engines — restart still helps */ }
       const raw = await peer.pc.createOffer({ iceRestart: true });
       const sdp = boostOpusQuality(raw.sdp ?? '');
       await peer.pc.setLocalDescription({ type: 'offer', sdp });

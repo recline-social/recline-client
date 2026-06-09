@@ -448,6 +448,16 @@ export const api = {
       body: JSON.stringify({ hours }),
     }),
 
+  // ── Notification mutes (per-channel / per-server) ─────────────────────────
+  getMutes: () =>
+    request<{ mutes: { scopeType: 'server' | 'channel'; scopeId: string }[] }>('/api/users/me/mutes'),
+
+  setMute: (scopeType: 'server' | 'channel', scopeId: string, muted: boolean) =>
+    request<{ ok: boolean; muted: boolean }>('/api/users/me/mutes', {
+      method: 'PUT',
+      body: JSON.stringify({ scopeType, scopeId, muted }),
+    }),
+
   // ── Channels ──────────────────────────────────────────────────────────────
   deleteChannel: (serverId: string, channelId: string) =>
     request<{ ok: boolean }>(`/api/servers/${serverId}/channels/${channelId}`, { method: 'DELETE' }),
@@ -566,7 +576,7 @@ export const api = {
     request<{ ok: boolean }>(`/api/users/${id}/block`, { method: 'DELETE' }),
 
   listBlocked: () =>
-    request<{ id: string; displayName: string; avatarUrl: string | null }[]>('/api/users/blocked'),
+    request<{ blocks: { id: string; username: string; displayName: string; avatarUrl: string | null; createdAt: number }[] }>('/api/users/blocked'),
 
   // ── Roles ─────────────────────────────────────────────────────────────────
   listRoles: (serverId: string) =>

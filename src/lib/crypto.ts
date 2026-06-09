@@ -366,6 +366,47 @@ export async function importPeerPublicKey(jwkString: string): Promise<CryptoKey>
   return crypto.subtle.importKey('jwk', jwk, { name: 'ECDH', namedCurve: 'P-256' }, true, []);
 }
 
+// ── CRYPTO-004: key fingerprints + trust-on-first-use (TOFU) ────────────────────
+// A fingerprint is a stable, human-comparable digest of a public key. Two users
+// read each other's fingerprint out-of-band (in person, over a trusted channel)
+// to detect a server-side key swap (MITM). TOFU pins a peer's key the first time
+// it is seen and warns if it ever changes, so even without manual verification a
+// silent key substitution is surfaced.
+
+/** SHA-256 over the P-256 public-key coordinates, rendered as grouped hex.
+ *  Accepts a JWK object or the JWK JSON string stored on the server. */
+export async function fingerprintJwk(jwk: JsonWebKey | string): Promise<string> {
+  let obj: JsonWebKey;
+  try { obj = typeof jwk === 'string' ? JSON.parse(jwk) : jwk; } catch { return ''; }
+  const material = `${obj.crv ?? 'P-256'}:${obj.x ?? ''}:${obj.y ?? ''}`;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material));
+  const bytes = new Uint8Array(digest).slice(0, 16); // 128-bit fingerprint is ample for verification
+  const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+  return hex.match(/.{1,4}/g)?.join(' ') ?? hex;
+}
+
+const TOFU_PREFIX = 'recline.tofu.peerkey.';
+
+/** Trust-on-first-use check for a peer's DM public key. Pins the key the first
+ *  time it is seen; thereafter reports whether the presented key matches the pin.
+ *  Public keys are not secret, so localStorage (persists across sessions, which is
+ *  what TOFU wants) is the right store. */
+export function checkPeerKeyTofu(userId: string, jwkString: string): 'first' | 'same' | 'changed' {
+  try {
+    const k = TOFU_PREFIX + userId;
+    const pinned = localStorage.getItem(k);
+    if (pinned == null) { localStorage.setItem(k, jwkString); return 'first'; }
+    return pinned === jwkString ? 'same' : 'changed';
+  } catch {
+    return 'same'; // storage unavailable — fail open, never block messaging
+  }
+}
+
+/** Re-pin a peer key after the user confirms a legitimate rotation. */
+export function repinPeerKey(userId: string, jwkString: string): void {
+  try { localStorage.setItem(TOFU_PREFIX + userId, jwkString); } catch { /* ignore */ }
+}
+
 /**
  * Derive the AES-GCM-256 key for a DM channel using ECDH + HKDF.
  * HKDF info includes the channel ID so each DM channel gets a distinct key
@@ -454,7 +495,16 @@ export async function archiveCurrentKeyPair(): Promise<void> {
   if (!current) return; // no key to archive — new user or after a wipe
   const history = (await idbGet<typeof current[]>('history')) ?? [];
   history.unshift(current); // newest first
-  if (history.length > DM_KEYPAIR_HISTORY_MAX) history.splice(DM_KEYPAIR_HISTORY_MAX);
+  if (history.length > DM_KEYPAIR_HISTORY_MAX) {
+    // Dropping the oldest archived key — any DM still encrypted only against it
+    // becomes permanently undecryptable on this device. Surface it rather than
+    // silently losing the key, so callers/telemetry can react.
+    const dropped = history.splice(DM_KEYPAIR_HISTORY_MAX);
+    console.warn(
+      `[crypto] DM key history full (max ${DM_KEYPAIR_HISTORY_MAX}); dropped ${dropped.length} oldest archived key(s). ` +
+      `Messages encrypted only against those keys may no longer decrypt on this device.`,
+    );
+  }
   await idbSet('history', history);
 }
 

@@ -28,6 +28,7 @@ type Props = {
   onExportData: () => void;
   onDeleteAccount: (password: string) => void;
   dmBackupOutOfSync?: boolean;
+  myFingerprint?: string;
 };
 
 type Tab = 'profile' | 'security' | 'notifications' | 'sparks';
@@ -802,6 +803,7 @@ function SecurityTab({
   onExportData,
   onDeleteAccount,
   dmBackupOutOfSync,
+  myFingerprint,
 }: {
   me: User;
   onUpdated: (user: User) => void;
@@ -811,6 +813,7 @@ function SecurityTab({
   onExportData: () => void;
   onDeleteAccount: (password: string) => void;
   dmBackupOutOfSync?: boolean;
+  myFingerprint?: string;
 }) {
   type Panel = 'idle' | 'totp-setup' | 'totp-disable' | 'regen-codes' | 'rotate-key' | 'sync-key';
   const [panel, setPanel] = useState<Panel>('idle');
@@ -965,6 +968,12 @@ function SecurityTab({
             <div className="text-[11px] text-ink-300/70 mt-0.5">
               ECDH P-256 key pair used for end-to-end encrypted direct messages. Up to 5 previous keys are kept locally for decrypting old messages.
             </div>
+            {myFingerprint && (
+              <div className="text-[11px] text-ink-300/70 mt-1.5">
+                Your key fingerprint: <span className="font-mono text-ink-100 tracking-wide">{myFingerprint}</span>
+                <span className="block text-ink-500 mt-0.5">Share this with contacts so they can verify they're talking to you.</span>
+              </div>
+            )}
           </div>
         </div>
         {dmBackupOutOfSync && (
@@ -1519,7 +1528,7 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
 }
 
 // ── Shell ─────────────────────────────────────────────────────────────────────
-export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, onSyncKey, isSupporter, sparksBalance, onSparksUpdate, initialTab, onSetDnd, onRevokeOtherSessions, onExportData, onDeleteAccount, dmBackupOutOfSync }: Props) {
+export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, onSyncKey, isSupporter, sparksBalance, onSparksUpdate, initialTab, onSetDnd, onRevokeOtherSessions, onExportData, onDeleteAccount, dmBackupOutOfSync, myFingerprint }: Props) {
   const [tab, setTab] = useState<Tab>('profile');
 
   useEffect(() => {
@@ -1564,6 +1573,7 @@ export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, onSyn
           onExportData={onExportData}
           onDeleteAccount={onDeleteAccount}
           dmBackupOutOfSync={dmBackupOutOfSync}
+          myFingerprint={myFingerprint}
         />
       )}
       {tab === 'notifications' && (

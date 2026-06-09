@@ -48,12 +48,16 @@ import {
   rotateDmKeyPair,
   archiveCurrentKeyPair,
   loadDmKeyHistory,
+  fingerprintJwk,
+  checkPeerKeyTofu,
+  repinPeerKey,
 } from './lib/crypto';
 import { CallManager, type PeerSnapshot } from './lib/webrtc';
 import { playCallSound } from './lib/callSounds';
 import { VoiceBar } from './components/VoiceBar';
 import { FeedbackButton } from './components/FeedbackButton';
 import { UserProfileCard } from './components/UserProfileCard';
+import { SearchModal, type SearchResult } from './components/SearchModal';
 import { BroadcastOverlay, type BroadcastPayload } from './components/BroadcastOverlay';
 import { BroadcastButton } from './components/BroadcastButton';
 import { Permissions, hasPermission, computeEffectivePerms } from './lib/permissions';
@@ -357,6 +361,18 @@ export default function App() {
   const [mobileMembersOpen, setMobileMembersOpen] = useState(false);
   // Profile card — userId of member whose card is open
   const [profileCardUserId, setProfileCardUserId] = useState<string | null>(null);
+  // Set of user IDs the current user has blocked
+  const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
+  // CRYPTO-004 (TOFU): peer userIds whose DM key changed since first seen, and cached fingerprints
+  const [peerKeyChanged, setPeerKeyChanged] = useState<Set<string>>(new Set());
+  const [peerFingerprints, setPeerFingerprints] = useState<Record<string, string>>({});
+  // CRYPTO-004: own DM public-key fingerprint, shown in settings for out-of-band verification
+  const [myFingerprint, setMyFingerprint] = useState<string>('');
+  // FEAT-040: notification mutes (scope id sets)
+  const [mutedServers, setMutedServers] = useState<Set<string>>(new Set());
+  const [mutedChannelIds, setMutedChannelIds] = useState<Set<string>>(new Set());
+  // FEAT-020: message search modal
+  const [searchOpen, setSearchOpen] = useState(false);
 
   // ── Spark wallet ───────────────────────────────────────────────────────────
   const [sparksBalance, setSparksBalance] = useState(0);
@@ -414,6 +430,8 @@ export default function App() {
   const unlockingRef = useRef(false);
   // Tracks DM channels currently being loaded to prevent double-fetch race (#loadDmMessages)
   const dmLoadingRef = useRef<Set<string>>(new Set());
+  // Tracks channels with an in-flight loadMoreMessages fetch (REL-001 — prevents duplicate paginated fetches on rapid scroll)
+  const loadMoreRef = useRef<Set<string>>(new Set());
   // tracks active typing auto-clear timers so they can be cancelled on stop/unmount
   const typingTimersRef = useRef<Map<string, number>>(new Map());
   // Guard against concurrent createChannel calls (double-click)
@@ -1441,6 +1459,16 @@ export default function App() {
     api.listDms().then((r) => setDms(r.dms)).catch(() => {});
     // Pre-fetch friends list
     api.listFriends().then((r) => setFriends(r.friends)).catch(() => {});
+    // Pre-fetch blocked-user list so block state is reflected across the UI
+    api.listBlocked().then((r) => setBlockedUserIds(new Set(r.blocks.map((b) => b.id)))).catch(() => {});
+    // Pre-fetch notification mutes (FEAT-040)
+    api.getMutes().then((r) => {
+      const servers = new Set<string>();
+      const channels = new Set<string>();
+      for (const m of r.mutes) { if (m.scopeType === 'server') servers.add(m.scopeId); else channels.add(m.scopeId); }
+      setMutedServers(servers);
+      setMutedChannelIds(channels);
+    }).catch(() => {});
     // Pre-fetch spark balance
     api.sparks.balance().then((r) => setSparksBalance(r.balance)).catch(() => {});
     // Claim daily streak — fires once per session on load; server enforces 24 h gate
@@ -1506,6 +1534,9 @@ export default function App() {
     if (!ch || ch.type !== 'text') return;
     if (channelMsgs[activeChannelId]?.loaded) return;
     const key = getCachedKey(activeServerId);
+    // REL-002: cancellation flag so a slow response that resolves after the user
+    // switched channels does not write stale data.
+    let cancelled = false;
     api.listMessages(activeChannelId, MSG_PAGE).then(async (r) => {
       const decoded: DecodedMessage[] = [];
       for (const m of r.messages as WireMessage[]) {
@@ -1533,6 +1564,7 @@ export default function App() {
         }
         decoded.push({ ...m, body, failed, decodedReply });
       }
+      if (cancelled) return;
       // Merge with any socket-pushed messages that arrived while we were
       // fetching, so we don't clobber them.
       setChannelMsgs((prev) => {
@@ -1548,7 +1580,8 @@ export default function App() {
           },
         };
       });
-    });
+    }).catch(() => {/* non-fatal — leave channel unloaded so a retry can refetch */});
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeChannelId, activeServerId, keysReady]);
 
@@ -1576,11 +1609,67 @@ export default function App() {
             dmsRef.current = next;
             return next;
           });
+          runPeerTofu(dm.otherUserId, publicKey);
         })
         .catch(() => { /* non-fatal — peer may not have registered a key yet */ });
+    } else if (dm?.otherPublicKey) {
+      runPeerTofu(dm.otherUserId, dm.otherPublicKey);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDmId, dmKeysReady]);
+
+  /* CRYPTO-004: TOFU check + fingerprint for a peer's DM public key. */
+  function runPeerTofu(userId: string, jwkString: string) {
+    const status = checkPeerKeyTofu(userId, jwkString);
+    setPeerKeyChanged((prev) => {
+      const want = status === 'changed';
+      if (prev.has(userId) === want) return prev;
+      const next = new Set(prev);
+      if (want) next.add(userId); else next.delete(userId);
+      return next;
+    });
+    fingerprintJwk(jwkString)
+      .then((fp) => setPeerFingerprints((prev) => (prev[userId] === fp ? prev : { ...prev, [userId]: fp })))
+      .catch(() => {});
+  }
+
+  /* CRYPTO-004: user confirms a changed peer key is legitimate — re-pin and re-derive. */
+  function handleAcceptPeerKey(dmChannelId: string) {
+    const dm = dmsRef.current.find((d) => d.id === dmChannelId);
+    if (!dm?.otherPublicKey) return;
+    repinPeerKey(dm.otherUserId, dm.otherPublicKey);
+    setPeerKeyChanged((prev) => {
+      if (!prev.has(dm.otherUserId)) return prev;
+      const next = new Set(prev);
+      next.delete(dm.otherUserId);
+      return next;
+    });
+    clearDmKey(dmChannelId);
+  }
+
+  /* FEAT-020: Cmd/Ctrl+K opens message search. */
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  /* CRYPTO-004: compute own DM public-key fingerprint for the security settings panel. */
+  useEffect(() => {
+    if (!dmKeysReady || !dmKeyPairRef.current) { setMyFingerprint(''); return; }
+    let cancelled = false;
+    exportPublicKeyJwk(dmKeyPairRef.current.publicKey)
+      .then((jwk) => fingerprintJwk(jwk))
+      .then((fp) => { if (!cancelled) setMyFingerprint(fp); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dmKeysReady]);
 
   /* ------------------------ Re-decrypt failed DMs when keys become available ------------------------ */
   useEffect(() => {
@@ -2194,6 +2283,8 @@ export default function App() {
   async function loadMoreMessages(channelId: string) {
     const state = channelMsgs[channelId];
     if (!state?.hasMore) return;
+    // REL-001: skip if a paginated fetch for this channel is already in flight
+    if (loadMoreRef.current.has(channelId)) return;
     // Resolve which server owns this channel
     let serverId: string | null = null;
     for (const [sid, chList] of Object.entries(channelsByServer)) {
@@ -2204,6 +2295,8 @@ export default function App() {
     const oldest = state.messages[0];
     if (!oldest) return;
     const cursor = `${oldest.createdAt},${oldest.id}`;
+    loadMoreRef.current.add(channelId);
+    try {
     const r = await api.listMessages(channelId, MSG_PAGE, cursor);
     const decoded: DecodedMessage[] = [];
     for (const m of r.messages as WireMessage[]) {
@@ -2245,6 +2338,9 @@ export default function App() {
         },
       };
     });
+    } finally {
+      loadMoreRef.current.delete(channelId);
+    }
   }
 
   async function loadMoreDmMessages(dmId: string) {
@@ -2252,20 +2348,28 @@ export default function App() {
     const msgs = dmMessages[dmId] ?? [];
     const oldest = msgs[0];
     if (!oldest) return;
+    // REL-001: skip if a paginated DM fetch is already in flight ('dm:' prefix avoids channel-id collision)
+    const guardKey = `dm:${dmId}`;
+    if (loadMoreRef.current.has(guardKey)) return;
     const cursor = `${oldest.createdAt},${oldest.id}`;
-    const { messages } = await api.getDmMessages(dmId, MSG_PAGE, cursor);
-    const dmChannel = dmsRef.current.find((d) => d.id === dmId);
-    const currentMsgs = dmMessagesRef.current[dmId] ?? [];
-    const decoded = dmChannel
-      ? await decryptDmMessages(messages as DmWireMessage[], dmChannel, currentMsgs)
-      : (messages as DmWireMessage[]).map((m) => ({ ...m, body: m.body ?? '', failed: false, isPlaintext: true }));
-    setDmMessages((prev) => {
-      const existing = prev[dmId] ?? [];
-      const existingIds = new Set(existing.map((m) => m.id));
-      const fresh = decoded.filter((m) => !existingIds.has(m.id));
-      return { ...prev, [dmId]: [...fresh, ...existing] };
-    });
-    setDmHasMore((prev) => ({ ...prev, [dmId]: messages.length === MSG_PAGE }));
+    loadMoreRef.current.add(guardKey);
+    try {
+      const { messages } = await api.getDmMessages(dmId, MSG_PAGE, cursor);
+      const dmChannel = dmsRef.current.find((d) => d.id === dmId);
+      const currentMsgs = dmMessagesRef.current[dmId] ?? [];
+      const decoded = dmChannel
+        ? await decryptDmMessages(messages as DmWireMessage[], dmChannel, currentMsgs)
+        : (messages as DmWireMessage[]).map((m) => ({ ...m, body: m.body ?? '', failed: false, isPlaintext: true }));
+      setDmMessages((prev) => {
+        const existing = prev[dmId] ?? [];
+        const existingIds = new Set(existing.map((m) => m.id));
+        const fresh = decoded.filter((m) => !existingIds.has(m.id));
+        return { ...prev, [dmId]: [...fresh, ...existing] };
+      });
+      setDmHasMore((prev) => ({ ...prev, [dmId]: messages.length === MSG_PAGE }));
+    } finally {
+      loadMoreRef.current.delete(guardKey);
+    }
   }
 
   // ── DM Call management ────────────────────────────────────────────────────
@@ -2691,6 +2795,11 @@ export default function App() {
     setDmUnreadMap({});
     setView('server');
     setFriends([]);
+    setBlockedUserIds(new Set());
+    setMutedServers(new Set());
+    setMutedChannelIds(new Set());
+    setPeerKeyChanged(new Set());
+    setPeerFingerprints({});
     setSparksBalance(0);
     setIsSupporter(false);
     setShowSupporterToast(false);
@@ -3003,6 +3112,122 @@ export default function App() {
     }
   }
 
+  async function handleBlockUser(userId: string) {
+    // Optimistic — revert on failure.
+    setBlockedUserIds((prev) => new Set(prev).add(userId));
+    try {
+      await api.blockUser(userId);
+    } catch (err) {
+      console.error('Failed to block user', err);
+      setBlockedUserIds((prev) => {
+        const next = new Set(prev);
+        next.delete(userId);
+        return next;
+      });
+    }
+  }
+
+  async function handleToggleMute(scopeType: 'server' | 'channel', scopeId: string) {
+    const current = scopeType === 'server' ? mutedServers : mutedChannelIds;
+    const setFn = scopeType === 'server' ? setMutedServers : setMutedChannelIds;
+    const nowMuted = !current.has(scopeId);
+    setFn((prev) => {
+      const next = new Set(prev);
+      if (nowMuted) next.add(scopeId); else next.delete(scopeId);
+      return next;
+    });
+    try {
+      await api.setMute(scopeType, scopeId, nowMuted);
+    } catch (err) {
+      console.error('Failed to toggle mute', err);
+      setFn((prev) => {
+        const next = new Set(prev);
+        if (nowMuted) next.delete(scopeId); else next.add(scopeId);
+        return next;
+      });
+    }
+  }
+
+  // FEAT-020: client-side search over messages decrypted in memory (server only holds
+  // ciphertext, so search cannot run server-side without breaking E2E).
+  function buildSearchResults(q: string): SearchResult[] {
+    if (!user) return [];
+    const needle = q.toLowerCase();
+    const out: SearchResult[] = [];
+    const nameOf = (uid: string): string => {
+      if (uid === user.id) return 'You';
+      const m = Object.values(membersByServer).flat().find((mm) => mm.id === uid);
+      if (m) return m.displayName;
+      const d = dms.find((dd) => dd.otherUserId === uid);
+      if (d) return d.otherDisplayName;
+      return 'Unknown';
+    };
+    for (const [channelId, state] of Object.entries(channelMsgs)) {
+      let channelName = 'channel';
+      let serverName = '';
+      for (const [sid, chList] of Object.entries(channelsByServer)) {
+        const ch = chList.find((c) => c.id === channelId);
+        if (ch) { channelName = ch.name; serverName = servers.find((s) => s.id === sid)?.name ?? ''; break; }
+      }
+      for (const m of state.messages) {
+        if (m.failed || !m.body) continue;
+        if (m.body.toLowerCase().includes(needle)) {
+          out.push({
+            id: m.id, kind: 'channel', containerId: channelId,
+            containerName: `#${channelName}${serverName ? ' · ' + serverName : ''}`,
+            senderName: nameOf(m.senderId), body: m.body, createdAt: m.createdAt,
+          });
+        }
+      }
+    }
+    for (const [dmId, msgs] of Object.entries(dmMessages)) {
+      const dm = dms.find((d) => d.id === dmId);
+      const containerName = dm ? `@${dm.otherDisplayName}` : 'Direct message';
+      for (const m of msgs) {
+        if (m.failed || !m.body) continue;
+        if (m.body.toLowerCase().includes(needle)) {
+          out.push({
+            id: m.id, kind: 'dm', containerId: dmId, containerName,
+            senderName: m.senderId === user.id ? 'You' : (dm?.otherDisplayName ?? 'Them'),
+            body: m.body, createdAt: m.createdAt,
+          });
+        }
+      }
+    }
+    out.sort((a, b) => b.createdAt - a.createdAt);
+    return out.slice(0, 50);
+  }
+
+  function handleSearchSelect(r: SearchResult) {
+    if (r.kind === 'dm') {
+      setView('dm');
+      setActiveDmId(r.containerId);
+      return;
+    }
+    for (const [sid, chList] of Object.entries(channelsByServer)) {
+      if (chList.some((c) => c.id === r.containerId)) {
+        setView('server');
+        setActiveServerId(sid);
+        setActiveChannelId(r.containerId);
+        break;
+      }
+    }
+  }
+
+  async function handleUnblockUser(userId: string) {
+    setBlockedUserIds((prev) => {
+      const next = new Set(prev);
+      next.delete(userId);
+      return next;
+    });
+    try {
+      await api.unblockUser(userId);
+    } catch (err) {
+      console.error('Failed to unblock user', err);
+      setBlockedUserIds((prev) => new Set(prev).add(userId));
+    }
+  }
+
   async function handleRevokeOtherSessions() {
     try {
       await api.revokeOtherSessions();
@@ -3229,6 +3454,9 @@ export default function App() {
               onLoadMore={() => loadMoreDmMessages(activeDm.id)}
               onOpenSidebar={() => setMobileSidebarOpen(true)}
               onClickUser={setProfileCardUserId}
+              peerFingerprint={peerFingerprints[activeDm.otherUserId]}
+              peerKeyChanged={peerKeyChanged.has(activeDm.otherUserId)}
+              onAcceptPeerKey={() => handleAcceptPeerKey(activeDm.id)}
             />
           ) : (
             <div className="flex-1 grid place-items-center text-ink-300 text-sm px-4 text-center">
@@ -3265,6 +3493,11 @@ export default function App() {
               unread={unread}
               onOpenSettings={() => setSettingsOpen(true)}
               onDeleteChannel={handleDeleteChannel}
+              serverMuted={mutedServers.has(activeServer.id)}
+              mutedChannels={mutedChannelIds}
+              onToggleServerMute={() => handleToggleMute('server', activeServer.id)}
+              onToggleChannelMute={(cid) => handleToggleMute('channel', cid)}
+              onOpenSearch={() => setSearchOpen(true)}
             />
           </div>
           {/* Resize handle — desktop only */}
@@ -3287,6 +3520,11 @@ export default function App() {
               unread={unread}
               onOpenSettings={() => { setSettingsOpen(true); setMobileSidebarOpen(false); }}
               onDeleteChannel={handleDeleteChannel}
+              serverMuted={mutedServers.has(activeServer.id)}
+              mutedChannels={mutedChannelIds}
+              onToggleServerMute={() => handleToggleMute('server', activeServer.id)}
+              onToggleChannelMute={(cid) => handleToggleMute('channel', cid)}
+              onOpenSearch={() => { setSearchOpen(true); setMobileSidebarOpen(false); }}
             />
           </div>
 
@@ -3458,6 +3696,12 @@ export default function App() {
         onClose={() => setUnlockTarget(null)}
         onUnlock={handleUnlock}
       />
+      <SearchModal
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        search={buildSearchResults}
+        onSelect={handleSearchSelect}
+      />
       <ProfileDialog
         open={profileOpen}
         onClose={() => { setProfileOpen(false); setProfileInitialTab('profile'); }}
@@ -3470,6 +3714,7 @@ export default function App() {
         sparksBalance={sparksBalance}
         onSparksUpdate={setSparksBalance}
         dmBackupOutOfSync={dmBackupOutOfSync}
+        myFingerprint={myFingerprint}
         onSetDnd={handleSetDnd}
         onRevokeOtherSessions={handleRevokeOtherSessions}
         onExportData={handleExportData}
@@ -3614,6 +3859,9 @@ export default function App() {
             online={online.has(profileMember.id) || profileMember.id === user.id}
             onClose={() => setProfileCardUserId(null)}
             onDm={profileMember.id !== user.id ? () => { openDm(profileMember.id); setProfileCardUserId(null); } : undefined}
+            isBlocked={blockedUserIds.has(profileMember.id)}
+            onBlock={() => handleBlockUser(profileMember!.id)}
+            onUnblock={() => handleUnblockUser(profileMember!.id)}
           />
         );
       })()}

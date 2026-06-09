@@ -77,6 +77,13 @@ export function ServerSettingsDialog({
   const [tab, setTab] = useState<Tab>('general');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // Two-step confirm for destructive member actions (kick/ban)
+  const [confirmAction, setConfirmAction] = useState<{ id: string; type: 'kick' | 'ban' } | null>(null);
+  useEffect(() => {
+    if (!confirmAction) return;
+    const t = setTimeout(() => setConfirmAction(null), 3000);
+    return () => clearTimeout(t);
+  }, [confirmAction]);
 
   // General
   const [newName, setNewName] = useState(server.name);
@@ -622,13 +629,18 @@ export function ServerSettingsDialog({
                             <>
                               <button
                                 onClick={async () => {
+                                  if (confirmAction?.id !== m.id || confirmAction.type !== 'kick') {
+                                    setConfirmAction({ id: m.id, type: 'kick' });
+                                    return;
+                                  }
+                                  setConfirmAction(null);
                                   setBusy(true);
                                   try { await onKick(m.id); } catch (ex: any) { setErr(ex.message ?? 'kick failed'); } finally { setBusy(false); }
                                 }}
                                 disabled={busy}
                                 className="text-[11px] text-rose-400 hover:text-rose-300 transition-colors px-2 py-1 rounded hover:bg-rose-500/10 disabled:opacity-40"
                               >
-                                Kick
+                                {confirmAction?.id === m.id && confirmAction.type === 'kick' ? 'Confirm kick' : 'Kick'}
                               </button>
                               <input
                                 type="text"
@@ -639,13 +651,18 @@ export function ServerSettingsDialog({
                               />
                               <button
                                 onClick={async () => {
+                                  if (confirmAction?.id !== m.id || confirmAction.type !== 'ban') {
+                                    setConfirmAction({ id: m.id, type: 'ban' });
+                                    return;
+                                  }
+                                  setConfirmAction(null);
                                   setBusy(true);
                                   try { await onBan(m.id, banReasonInputs[m.id]?.trim() || undefined); } catch (ex: any) { setErr(ex.message ?? 'ban failed'); } finally { setBusy(false); }
                                 }}
                                 disabled={busy}
                                 className="text-[11px] text-amber-400 hover:text-amber-300 transition-colors px-2 py-1 rounded hover:bg-amber-500/10 disabled:opacity-40"
                               >
-                                Ban
+                                {confirmAction?.id === m.id && confirmAction.type === 'ban' ? 'Confirm ban' : 'Ban'}
                               </button>
                             </>
                           )}

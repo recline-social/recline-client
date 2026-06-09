@@ -638,9 +638,9 @@ export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, 
         )}
       </div>
 
-      {/* Hover action bar */}
+      {/* Action bar — always visible on touch (no hover), hover-reveal on desktop (UX-002) */}
       {!editing && (
-        <div className="absolute right-3 top-1 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
+        <div className="absolute right-3 top-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
           {onReaction && (
             <div className="relative" ref={pickerRef}>
               <button

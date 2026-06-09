@@ -14,7 +14,32 @@ type Props = {
   unread: Record<string, number>;
   onOpenSettings: () => void;
   onDeleteChannel?: (channelId: string, channelName: string) => void;
+  // FEAT-040: notification mutes
+  serverMuted?: boolean;
+  mutedChannels?: Set<string>;
+  onToggleServerMute?: () => void;
+  onToggleChannelMute?: (channelId: string) => void;
+  // FEAT-020: open message search
+  onOpenSearch?: () => void;
 };
+
+function BellIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
+    </svg>
+  );
+}
+
+function BellOffIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" /><path d="M18.63 13A17.89 17.89 0 0 1 18 8" />
+      <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14" /><path d="M18 8a6 6 0 0 0-9.33-5" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  );
+}
 
 function RoomDot() {
   return (
@@ -47,6 +72,11 @@ export function ChannelList(props: Props) {
     unread,
     onOpenSettings,
     onDeleteChannel,
+    serverMuted,
+    mutedChannels,
+    onToggleServerMute,
+    onToggleChannelMute,
+    onOpenSearch,
   } = props;
   const [creating, setCreating] = useState<'text' | 'voice' | null>(null);
   const [name, setName] = useState('');
@@ -88,6 +118,17 @@ export function ChannelList(props: Props) {
           <div className="text-[13px] font-semibold truncate min-w-0 text-ink-100">{server.name}</div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
+          {onOpenSearch && (
+            <button
+              onClick={onOpenSearch}
+              className="h-6 w-6 grid place-items-center rounded-md text-ink-500 hover:text-ink-200 hover:bg-white/[0.05] transition-colors"
+              title="Search messages (Ctrl/⌘K)"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+            </button>
+          )}
           {canManage && (
             <button
               onClick={copyInvite}
@@ -108,6 +149,17 @@ export function ChannelList(props: Props) {
               ) : (
                 inviteCode.slice(0, 6) + '…'
               )}
+            </button>
+          )}
+          {onToggleServerMute && (
+            <button
+              onClick={onToggleServerMute}
+              className={`h-6 w-6 grid place-items-center rounded-md transition-colors ${
+                serverMuted ? 'text-amber-400 hover:text-amber-300 hover:bg-amber-500/10' : 'text-ink-500 hover:text-ink-200 hover:bg-white/[0.05]'
+              }`}
+              title={serverMuted ? 'Unmute this space' : 'Mute notifications for this space'}
+            >
+              {serverMuted ? <BellOffIcon /> : <BellIcon />}
             </button>
           )}
           <button
@@ -165,6 +217,8 @@ export function ChannelList(props: Props) {
                 onDelete={canManage ? () => onDeleteChannel?.(c.id, c.name) : undefined}
                 confirmDeleteId={confirmDeleteId}
                 setConfirmDeleteId={setConfirmDeleteId}
+                muted={mutedChannels?.has(c.id)}
+                onToggleMute={onToggleChannelMute ? () => onToggleChannelMute(c.id) : undefined}
               />
             );
           })}
@@ -210,6 +264,8 @@ export function ChannelList(props: Props) {
                   onDelete={canManage ? () => onDeleteChannel?.(c.id, c.name) : undefined}
                   confirmDeleteId={confirmDeleteId}
                   setConfirmDeleteId={setConfirmDeleteId}
+                  muted={mutedChannels?.has(c.id)}
+                  onToggleMute={onToggleChannelMute ? () => onToggleChannelMute(c.id) : undefined}
                 />
               </div>
             );
@@ -277,6 +333,8 @@ function ChannelItem({
   onDelete,
   confirmDeleteId,
   setConfirmDeleteId,
+  muted,
+  onToggleMute,
 }: {
   channelId: string;
   icon: React.ReactNode;
@@ -288,6 +346,8 @@ function ChannelItem({
   onDelete?: () => void;
   confirmDeleteId?: string | null;
   setConfirmDeleteId?: (id: string | null) => void;
+  muted?: boolean;
+  onToggleMute?: () => void;
 }) {
   const hasUnread = unread > 0;
   const isConfirming = !!onDelete && confirmDeleteId === channelId;
@@ -323,48 +383,60 @@ function ChannelItem({
           </span>
         )}
       </button>
-      {onDelete && (
-        isConfirming ? (
-          /* Inline two-step confirmation — channel delete is permanent (#L-9 / UX-003) */
-          <div
-            className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete();
-                setConfirmDeleteId?.(null);
-              }}
-              className="px-1.5 py-0.5 rounded text-[10px] font-semibold text-rose-300 bg-rose-500/20 hover:bg-rose-500/35 transition-colors"
-            >
-              Delete
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfirmDeleteId?.(null);
-              }}
-              className="px-1.5 py-0.5 rounded text-[10px] text-ink-400 hover:text-ink-200 hover:bg-white/[0.06] transition-colors"
-            >
-              Cancel
-            </button>
-          </div>
-        ) : (
+      {/* Muted indicator — persistent (when muted) but hidden while hovering so the actions show */}
+      {muted && !isConfirming && (
+        <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-amber-400/70 pointer-events-none group-hover/item:opacity-0 transition-opacity">
+          <BellOffIcon />
+        </span>
+      )}
+
+      {/* Delete confirmation takes over the action area */}
+      {isConfirming ? (
+        <div
+          className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1"
+          onClick={(e) => e.stopPropagation()}
+        >
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setConfirmDeleteId?.(channelId);
-            }}
-            title={`Delete #${name}`}
-            className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover/item:opacity-100 transition-opacity h-5 w-5 grid place-items-center rounded text-ink-400 hover:text-rose-300 hover:bg-rose-500/15"
+            onClick={(e) => { e.stopPropagation(); onDelete?.(); setConfirmDeleteId?.(null); }}
+            className="px-1.5 py-0.5 rounded text-[10px] font-semibold text-rose-300 bg-rose-500/20 hover:bg-rose-500/35 transition-colors"
           >
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
+            Delete
           </button>
-        )
+          <button
+            onClick={(e) => { e.stopPropagation(); setConfirmDeleteId?.(null); }}
+            className="px-1.5 py-0.5 rounded text-[10px] text-ink-400 hover:text-ink-200 hover:bg-white/[0.06] transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (onToggleMute || onDelete) && (
+        /* Hover actions: mute toggle + delete */
+        <div
+          className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover/item:opacity-100 transition-opacity"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {onToggleMute && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleMute(); }}
+              title={muted ? 'Unmute channel' : 'Mute channel notifications'}
+              className={`h-5 w-5 grid place-items-center rounded ${muted ? 'text-amber-400 hover:bg-amber-500/15' : 'text-ink-400 hover:text-ink-200 hover:bg-white/[0.06]'}`}
+            >
+              {muted ? <BellOffIcon /> : <BellIcon />}
+            </button>
+          )}
+          {onDelete && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setConfirmDeleteId?.(channelId); }}
+              title={`Delete #${name}`}
+              className="h-5 w-5 grid place-items-center rounded text-ink-400 hover:text-rose-300 hover:bg-rose-500/15"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

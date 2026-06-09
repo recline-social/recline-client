@@ -377,9 +377,9 @@ function DmMessageRow({ msg, dm, me, showHeader, onReact, onReply, onEdit, onDel
         )}
       </div>
 
-      {/* Hover action bar */}
+      {/* Action bar — always visible on touch (no hover), hover-reveal on desktop (UX-002) */}
       {!editing && (
-        <div className="absolute right-3 top-1 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
+        <div className="absolute right-3 top-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
           {/* Emoji react */}
           <div className="relative" ref={pickerRef}>
             <button
@@ -486,13 +486,19 @@ type Props = {
   onLoadMore?: () => Promise<void>;
   onOpenSidebar?: () => void;
   onClickUser?: (userId: string) => void;
+  // CRYPTO-004: TOFU — peer's key safety number, and whether it changed since first seen.
+  peerFingerprint?: string;
+  peerKeyChanged?: boolean;
+  onAcceptPeerKey?: () => void;
 };
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function DmView({
   dm, messages, me, online, onSend, onDelete, onEdit, onClearChat, onReact, onTyping, isTyping,
   call, onCallStart, hasMore = false, onLoadMore, onOpenSidebar, onClickUser,
+  peerFingerprint, peerKeyChanged, onAcceptPeerKey,
 }: Props) {
+  const [showFingerprint, setShowFingerprint] = useState(false);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -646,10 +652,18 @@ export function DmView({
           )}
 
           {isEncrypted ? (
-            <span className="text-[11px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-2 py-0.5 hidden sm:flex items-center gap-1.5">
+            <button
+              onClick={() => setShowFingerprint((s) => !s)}
+              title="Show encryption key fingerprint"
+              className={`text-[11px] rounded px-2 py-0.5 hidden sm:flex items-center gap-1.5 transition-colors ${
+                peerKeyChanged
+                  ? 'text-amber-300 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/15'
+                  : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 hover:bg-emerald-500/15'
+              }`}
+            >
               <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><rect x="2" y="5" width="8" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.4"/><path d="M4 5V3.5a2 2 0 1 1 4 0V5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
-              E2E
-            </span>
+              {peerKeyChanged ? '⚠ key changed' : 'E2E'}
+            </button>
           ) : (
             <span className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-2 py-0.5 hidden sm:block">⚠ pending</span>
           )}
@@ -670,6 +684,38 @@ export function DmView({
           )}
         </div>
       </div>
+
+      {/* CRYPTO-004: peer key changed since first seen — possible rotation or MITM */}
+      {peerKeyChanged && (
+        <div className="px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/20 flex items-start gap-2.5 text-[12px]">
+          <span className="text-amber-400 mt-0.5">⚠</span>
+          <div className="min-w-0 flex-1">
+            <div className="text-amber-200 font-medium">{dm.otherDisplayName}'s encryption key changed.</div>
+            <div className="text-amber-300/80 mt-0.5">
+              This happens when they reset their device or rotate keys — but could also indicate someone intercepting.
+              {peerFingerprint && <> Verify the new fingerprint <span className="font-mono text-amber-100">{peerFingerprint}</span> with them before continuing.</>}
+            </div>
+          </div>
+          {onAcceptPeerKey && (
+            <button
+              onClick={onAcceptPeerKey}
+              className="shrink-0 text-[11px] font-semibold text-amber-100 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 rounded px-2.5 py-1 transition-colors"
+            >
+              Accept new key
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* CRYPTO-004: fingerprint reveal for manual out-of-band verification */}
+      {showFingerprint && !peerKeyChanged && peerFingerprint && (
+        <div className="px-4 py-2 bg-ink-900/60 border-b border-white/5 text-[11px] text-ink-300 flex items-center gap-2">
+          <span className="text-emerald-400">🔒</span>
+          <span>Key fingerprint:</span>
+          <span className="font-mono text-ink-100 tracking-wide">{peerFingerprint}</span>
+          <span className="text-ink-500 hidden md:inline">— compare with {dm.otherDisplayName} to verify no one is in the middle.</span>
+        </div>
+      )}
 
       {/* Call status bar */}
       {call && call.status !== 'incoming-ringing' && <DmCallBar call={call} />}

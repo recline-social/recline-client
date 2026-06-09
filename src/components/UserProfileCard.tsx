@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Avatar } from './Avatar';
 import type { Member, User } from '../types';
 
@@ -8,6 +8,9 @@ type Props = {
   online: boolean;
   onClose: () => void;
   onDm?: () => void;
+  isBlocked?: boolean;
+  onBlock?: () => void;
+  onUnblock?: () => void;
 };
 
 function PlatformOwnerBadge() {
@@ -62,8 +65,9 @@ function FounderBadge() {
   );
 }
 
-export function UserProfileCard({ member, me, online, onClose, onDm }: Props) {
+export function UserProfileCard({ member, me, online, onClose, onDm, isBlocked, onBlock, onUnblock }: Props) {
   const isSelf = member.id === me.id;
+  const [confirmBlock, setConfirmBlock] = useState(false);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
@@ -225,7 +229,7 @@ export function UserProfileCard({ member, me, online, onClose, onDm }: Props) {
           </div>
 
           {/* Message button */}
-          {!isSelf && onDm && (
+          {!isSelf && onDm && !isBlocked && (
             <button
               onClick={() => { onDm(); onClose(); }}
               className="mt-3 w-full py-2.5 rounded-xl text-[13px] font-semibold transition-all"
@@ -243,6 +247,44 @@ export function UserProfileCard({ member, me, online, onClose, onDm }: Props) {
             >
               Message
             </button>
+          )}
+
+          {/* Block / unblock — never on own card */}
+          {!isSelf && (onBlock || onUnblock) && (
+            isBlocked ? (
+              <button
+                onClick={() => onUnblock?.()}
+                className="mt-2 w-full py-2 rounded-xl text-[12px] font-medium text-ink-300 hover:text-ink-100 transition-colors"
+                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}
+              >
+                Unblock @{member.username}
+              </button>
+            ) : confirmBlock ? (
+              <div className="mt-2 w-full flex gap-2">
+                <button
+                  onClick={() => { onBlock?.(); setConfirmBlock(false); }}
+                  className="flex-1 py-2 rounded-xl text-[12px] font-semibold text-rose-300 transition-colors"
+                  style={{ background: 'rgba(244,63,94,0.12)', border: '1px solid rgba(244,63,94,0.3)' }}
+                >
+                  Confirm block
+                </button>
+                <button
+                  onClick={() => setConfirmBlock(false)}
+                  className="flex-1 py-2 rounded-xl text-[12px] font-medium text-ink-300 transition-colors"
+                  style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmBlock(true)}
+                className="mt-2 w-full py-2 rounded-xl text-[12px] font-medium text-ink-400 hover:text-rose-300 transition-colors"
+                style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.06)' }}
+              >
+                Block @{member.username}
+              </button>
+            )
           )}
         </div>
       </div>
