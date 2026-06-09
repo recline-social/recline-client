@@ -66,14 +66,23 @@ export function setNotificationPref(enabled: boolean): void {
 
 // ── Gate ───────────────────────────────────────────────────────────────────────
 
+// FEAT-052: set true while the user's status is Do Not Disturb — silences all
+// local desktop notifications (server-side push is suppressed independently).
+let dndActive = false;
+export function setDndActive(active: boolean): void {
+  dndActive = active;
+}
+
 /**
  * Returns true when a notification should actually fire:
+ *   - The user is not in Do Not Disturb
  *   - Notifications are supported
  *   - Browser permission is granted
  *   - User preference is enabled
  *   - The document tab is currently hidden (backgrounded)
  */
 export function shouldNotify(): boolean {
+  if (dndActive) return false;
   if (!notificationsSupported()) return false;
   if (Notification.permission !== 'granted') return false;
   if (!getNotificationPref()) return false;

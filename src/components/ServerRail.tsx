@@ -12,6 +12,11 @@ type Props = {
   onLogout: () => void;
   onOpenProfile: () => void;
   onViewProfile: () => void;
+  // FEAT-052: presence status picker
+  myStatus: 'online' | 'dnd' | 'invisible';
+  onSetStatus: (status: 'online' | 'dnd' | 'invisible') => void;
+  // FEAT-006: open the feedback modal (floating button is desktop-only)
+  onSendFeedback: () => void;
 
   me: { id: string; displayName: string; username: string; avatarUrl?: string | null };
   unreadByServer: Record<string, number>;
@@ -44,6 +49,9 @@ export function ServerRail({
   onLogout,
   onOpenProfile,
   onViewProfile,
+  myStatus,
+  onSetStatus,
+  onSendFeedback,
 
   me,
   unreadByServer,
@@ -68,15 +76,22 @@ export function ServerRail({
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [menuOpen]);
 
+  // FEAT-052: while connected, the avatar dot reflects the chosen status;
+  // connection problems always win (amber/red pulse) so they stay visible.
+  const STATUS_META: Record<'online' | 'dnd' | 'invisible', { dot: string; label: string }> = {
+    online:    { dot: 'bg-emerald-400', label: 'Online' },
+    dnd:       { dot: 'bg-rose-500',    label: 'Do Not Disturb' },
+    invisible: { dot: 'bg-amber-500',   label: 'Invisible' },
+  };
   const connDot =
     connectionState === 'connected'
-      ? 'bg-emerald-400'
+      ? STATUS_META[myStatus].dot
       : connectionState === 'connecting'
       ? 'bg-amber-400 animate-pulseDot'
       : 'bg-rose-500';
   const connLabel =
     connectionState === 'connected'
-      ? 'Online'
+      ? STATUS_META[myStatus].label
       : connectionState === 'connecting'
       ? 'Reconnecting'
       : 'Offline';
@@ -287,6 +302,35 @@ export function ServerRail({
               </div>
             </div>
 
+            {/* FEAT-052: status picker */}
+            <div className="px-2 py-1.5 border-b border-white/[0.07]">
+              <div className="px-1 pb-1 text-[10px] uppercase tracking-wider text-ink-500">Status</div>
+              {([
+                { id: 'online' as const,    label: 'Online',         hint: 'Receiving notifications' },
+                { id: 'dnd' as const,       label: 'Do Not Disturb', hint: 'Mutes notifications until turned off' },
+                { id: 'invisible' as const, label: 'Invisible',      hint: 'Appear offline to everyone' },
+              ]).map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => { onSetStatus(s.id); setMenuOpen(false); }}
+                  className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left transition-colors ${
+                    myStatus === s.id ? 'bg-white/[0.07]' : 'hover:bg-white/[0.05]'
+                  }`}
+                >
+                  <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${STATUS_META[s.id].dot}`} />
+                  <span className="min-w-0">
+                    <span className="block text-[12px] font-medium text-ink-100">{s.label}</span>
+                    <span className="block text-[10px] text-ink-500 truncate">{s.hint}</span>
+                  </span>
+                  {myStatus === s.id && (
+                    <svg className="ml-auto shrink-0 text-ink-300" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  )}
+                </button>
+              ))}
+            </div>
+
             {/* Actions */}
             <div className="py-1">
               <MenuItem
@@ -298,6 +342,11 @@ export function ServerRail({
                 onClick={() => { setMenuOpen(false); onOpenProfile(); }}
                 icon={<UserIcon />}
                 label="Account settings"
+              />
+              <MenuItem
+                onClick={() => { setMenuOpen(false); onSendFeedback(); }}
+                icon={<FeedbackIcon />}
+                label="Send feedback"
               />
               <div className="my-1 mx-2 border-t border-white/[0.06]" />
               <MenuItem
@@ -364,6 +413,14 @@ function LogoutIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
+    </svg>
+  );
+}
+
+function FeedbackIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
     </svg>
   );
 }

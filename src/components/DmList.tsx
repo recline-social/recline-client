@@ -16,6 +16,8 @@ type Props = {
   onOpenDmWithUser?: (userId: string) => void;
   // FEAT-033: mark every DM conversation as read
   onMarkAllRead?: () => void;
+  // FEAT-052: peer presence statuses — 'dnd' renders a red dot
+  statuses?: Record<string, 'online' | 'dnd'>;
 };
 
 function timeAgo(ts: number | null): string {
@@ -27,7 +29,7 @@ function timeAgo(ts: number | null): string {
   return `${Math.floor(diff / 86_400_000)}d`;
 }
 
-export function DmList({ dms, activeDmId, unread, online, onSelect, friends, onFriendsChange, onOpenDmWithUser, onMarkAllRead }: Props) {
+export function DmList({ dms, activeDmId, unread, online, onSelect, friends, onFriendsChange, onOpenDmWithUser, onMarkAllRead, statuses }: Props) {
   const hasUnread = Object.values(unread).some((n) => n > 0);
   const [tab, setTab] = useState<Tab>('messages');
   const [addUsername, setAddUsername] = useState('');
@@ -178,7 +180,7 @@ export function DmList({ dms, activeDmId, unread, online, onSelect, friends, onF
                         id={dm.otherUserId}
                         size="sm"
                         imageUrl={dm.otherAvatarUrl}
-                        status={isOnline ? 'online' : 'offline'}
+                        status={isOnline ? (statuses?.[dm.otherUserId] === 'dnd' ? 'dnd' : 'online') : 'offline'}
                       />
                     </div>
                     <div className="min-w-0 flex-1">

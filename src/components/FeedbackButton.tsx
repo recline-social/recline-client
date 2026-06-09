@@ -36,8 +36,15 @@ const KINDS: { id: Kind; label: string; icon: React.ReactNode; placeholder: stri
   },
 ];
 
-export function FeedbackButton() {
-  const [open, setOpen] = useState(false);
+type FeedbackButtonProps = {
+  /** Controlled open state — owned by App so the user-menu entry can open the
+   *  modal too (the floating trigger is hidden on small screens, where it used
+   *  to sit on top of the composer's send button). */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+};
+
+export function FeedbackButton({ open, onOpenChange }: FeedbackButtonProps) {
   const [kind, setKind] = useState<Kind>('feedback');
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -52,7 +59,7 @@ export function FeedbackButton() {
   }
 
   function close() {
-    setOpen(false);
+    onOpenChange(false);
     setTimeout(reset, 300);
   }
 
@@ -74,11 +81,13 @@ export function FeedbackButton() {
 
   return (
     <>
-      {/* Floating trigger */}
+      {/* Floating trigger — desktop only. On small screens this sat directly on
+          top of the composer's send button (both bottom-right), making send
+          unpressable; mobile opens the modal from the user menu instead. */}
       <button
-        onClick={() => setOpen(true)}
+        onClick={() => onOpenChange(true)}
         title="Send feedback"
-        className="fixed bottom-5 right-5 z-50 h-10 w-10 rounded-full bg-accent-violet/20 border border-accent-violet/30 text-accent-violet hover:bg-accent-violet/30 hover:border-accent-violet/50 transition-all shadow-lg grid place-items-center"
+        className="fixed bottom-5 right-5 z-50 h-10 w-10 rounded-full bg-accent-violet/20 border border-accent-violet/30 text-accent-violet hover:bg-accent-violet/30 hover:border-accent-violet/50 transition-all shadow-lg hidden md:grid place-items-center"
         aria-label="Send feedback"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

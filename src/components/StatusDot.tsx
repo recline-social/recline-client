@@ -1,4 +1,4 @@
-export type PresenceStatus = 'online' | 'away' | 'offline';
+export type PresenceStatus = 'online' | 'away' | 'dnd' | 'offline';
 
 type Props = {
   status: PresenceStatus;
@@ -17,6 +17,7 @@ const dotSize = {
 const statusColor: Record<PresenceStatus, string> = {
   online: 'bg-green-500',
   away:   'bg-yellow-400',
+  dnd:    'bg-rose-500',
   offline: 'bg-zinc-500',
 };
 

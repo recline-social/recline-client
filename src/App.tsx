@@ -67,6 +67,7 @@ import {
   unregisterPushSubscription,
   showNotification,
   shouldNotify,
+  setDndActive,
 } from './lib/notifications';
 
 // ── Persistent audio: keeps remote streams audible when CallView is not mounted ─
@@ -252,6 +253,20 @@ export default function App() {
   const [membersByServer, setMembersByServer] = useState<Record<string, Member[]>>({});
   const [rolesByServer, setRolesByServer] = useState<Record<string, ServerRole[]>>({});
   const [online, setOnline] = useState<Set<string>>(new Set());
+  // FEAT-052: presence statuses. myStatus is this user's pick (persisted server-
+  // side); userStatuses tracks peers ('dnd' shows a red dot — 'invisible' peers
+  // simply appear offline so they never appear here).
+  const [myStatus, setMyStatus] = useState<'online' | 'dnd' | 'invisible'>('online');
+  const [userStatuses, setUserStatuses] = useState<Record<string, 'online' | 'dnd'>>({});
+  // FEAT-006: feedback modal — state lives here so both the floating button
+  // (desktop) and the user menu entry (mobile-safe) can open it.
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+
+  // FEAT-052: DND also silences LOCAL desktop notifications (push is suppressed
+  // server-side). Synced into the notifications module's gate.
+  useEffect(() => {
+    setDndActive(myStatus === 'dnd');
+  }, [myStatus]);
 
   // messages per channel (decoded)
   const [channelMsgs, setChannelMsgs] = useState<Record<string, ChannelState>>({});
@@ -513,6 +528,18 @@ export default function App() {
     api.markAllDmsRead().catch(() => {});
   }
 
+  // FEAT-052: change own presence status. Optimistic — server ack reverts on failure.
+  function handleSetStatus(status: 'online' | 'dnd' | 'invisible') {
+    const prev = myStatus;
+    setMyStatus(status);
+    socketRef.current?.emit('status:set', status, (resp: { ok: boolean; error?: string }) => {
+      if (!resp?.ok) {
+        setMyStatus(prev);
+        console.error('[status:set] rejected:', resp?.error);
+      }
+    });
+  }
+
   // when the tab regains visibility, treat the active channel/DM as read
   useEffect(() => {
     const handler = () => {
@@ -751,13 +778,33 @@ export default function App() {
       }
     };
 
-    const onPresence = (data: { userId: string; online: boolean }) => {
+    const onPresence = (data: { userId: string; online: boolean; status?: 'online' | 'dnd' }) => {
       setOnline((prev) => {
         const next = new Set(prev);
         if (data.online) next.add(data.userId);
         else next.delete(data.userId);
         return next;
       });
+      // FEAT-052: track peer statuses so dots can show red for DND. Offline
+      // (including invisible peers — broadcast as offline) clears the entry.
+      setUserStatuses((prev) => {
+        if (data.online && data.status) {
+          if (prev[data.userId] === data.status) return prev;
+          return { ...prev, [data.userId]: data.status };
+        }
+        if (!data.online && prev[data.userId]) {
+          const next = { ...prev };
+          delete next[data.userId];
+          return next;
+        }
+        return prev;
+      });
+    };
+
+    // FEAT-052: own persisted status (sent on connect + whenever any of this
+    // user's tabs/devices changes it).
+    const onStatusSelf = (data: { status: 'online' | 'dnd' | 'invisible' }) => {
+      setMyStatus(data.status);
     };
 
     const onTypingStart = (data: { channelId: string; userId: string }) => {
@@ -1151,6 +1198,7 @@ export default function App() {
 
     s.on('message:new', onMessage);
     s.on('presence:update', onPresence);
+    s.on('status:self', onStatusSelf);
     s.on('typing:start', onTypingStart);
     s.on('typing:stop', onTypingStop);
     s.on('voice:activity', onVoiceActivity);
@@ -1412,6 +1460,7 @@ export default function App() {
       s.off('session:revoked', onSessionRevoked);
       s.off('message:new', onMessage);
       s.off('presence:update', onPresence);
+      s.off('status:self', onStatusSelf);
       s.off('typing:start', onTypingStart);
       s.off('typing:stop', onTypingStop);
       s.off('voice:activity', onVoiceActivity);
@@ -2884,6 +2933,9 @@ export default function App() {
     setDmKeysReady(false);
     setDmUnreadMap({});
     lastReadSentRef.current = {};
+    setMyStatus('online');
+    setUserStatuses({});
+    setFeedbackOpen(false);
     setView('server');
     setFriends([]);
     setBlockedUserIds(new Set());
@@ -3471,6 +3523,9 @@ export default function App() {
         onLogout={logout}
         onOpenProfile={() => setProfileOpen(true)}
         onViewProfile={() => setProfileCardUserId(user.id)}
+        myStatus={myStatus}
+        onSetStatus={handleSetStatus}
+        onSendFeedback={() => setFeedbackOpen(true)}
         me={user}
         unreadByServer={unreadByServer}
         connectionState={connectionState}
@@ -3495,6 +3550,7 @@ export default function App() {
               onFriendsChange={setFriends}
               onOpenDmWithUser={openDm}
               onMarkAllRead={handleMarkAllDmsRead}
+              statuses={userStatuses}
             />
           </div>
           {/* Mobile slide-in DM list */}
@@ -3510,6 +3566,7 @@ export default function App() {
                 onFriendsChange={setFriends}
                 onOpenDmWithUser={(userId) => { openDm(userId); setMobileSidebarOpen(false); }}
                 onMarkAllRead={handleMarkAllDmsRead}
+                statuses={userStatuses}
               />
             </div>
           </div>
@@ -3761,6 +3818,7 @@ export default function App() {
             <MemberList
               members={members}
               online={online}
+              statuses={userStatuses}
               me={user}
               onOpenDm={openDm}
               onClickUser={setProfileCardUserId}
@@ -3776,6 +3834,7 @@ export default function App() {
             <MemberList
               members={members}
               online={online}
+              statuses={userStatuses}
               me={user}
               onOpenDm={(userId) => { openDm(userId); setMobileMembersOpen(false); }}
               onClickUser={(uid) => { setProfileCardUserId(uid); setMobileMembersOpen(false); }}
@@ -3870,7 +3929,7 @@ export default function App() {
           onRolesChange={(roles) => setRolesByServer((prev) => ({ ...prev, [activeServer.id]: roles }))}
         />
       )}
-      <FeedbackButton />
+      <FeedbackButton open={feedbackOpen} onOpenChange={setFeedbackOpen} />
 
       {/* DM incoming call modal — shown on top of everything */}
       {dmCall?.status === 'incoming-ringing' && (

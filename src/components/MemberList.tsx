@@ -6,6 +6,8 @@ import type { Member, ServerRole, User } from '../types';
 type Props = {
   members: Member[];
   online: Set<string>;
+  /** FEAT-052: per-user presence status — 'dnd' renders a red dot instead of green */
+  statuses?: Record<string, 'online' | 'dnd'>;
   me: User;
   onOpenDm?: (userId: string) => void;
   onClickUser?: (userId: string) => void;
@@ -234,6 +236,7 @@ function ContextMenu({
 export function MemberList({
   members,
   online,
+  statuses,
   me,
   onOpenDm,
   onClickUser,
@@ -326,6 +329,7 @@ export function MemberList({
       m,
       isSelf: m.id === me.id,
       online: isOnline(m),
+      dnd: statuses?.[m.id] === 'dnd',
       onDm: m.id !== me.id && onOpenDm ? () => onOpenDm!(m.id) : undefined,
       onClickUser: onClickUser ? () => onClickUser!(m.id) : undefined,
       onContextMenu: (e: React.MouseEvent) => handleContextMenu(e, m),
@@ -425,6 +429,7 @@ function Row({
   m,
   isSelf,
   online,
+  dnd,
   dim,
   onDm,
   onClickUser,
@@ -436,6 +441,7 @@ function Row({
   m: Member;
   isSelf: boolean;
   online: boolean;
+  dnd?: boolean;
   dim?: boolean;
   onDm?: () => void;
   onClickUser?: () => void;
@@ -452,7 +458,7 @@ function Row({
     .sort((a, b) => b.position - a.position)[0] ?? null;
   const nameColor = topColorRole?.color ?? c.text;
 
-  const status = online ? 'online' as const : 'offline' as const;
+  const status = online ? (dnd ? 'dnd' as const : 'online' as const) : 'offline' as const;
 
   return (
     <div
