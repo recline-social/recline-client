@@ -204,6 +204,8 @@ export type DmWireMessage = {
   fileName?: string | null;
   fileSize?: number | null;
   fileType?: string | null;
+  /** Emoji reactions — included in history responses; updated live via dm:reaction:update. */
+  reactions?: DmReaction[];
 };
 
 /** Decoded/displayable DM message — body is always a string after decrypt/fallback. */
@@ -256,6 +258,8 @@ export type DmCallState = {
   startedAt: number | null;  // unix ms when status hit 'active'
   /** Peer audio volume, 0–1. Default 1. */
   peerVolume: number;
+  /** ICE candidates queued before remote description is set, drained in offer/answer handlers. */
+  _pendingCandidates?: RTCIceCandidateInit[];
 };
 
 export type FriendStatus = 'pending' | 'accepted';

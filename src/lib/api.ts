@@ -128,6 +128,8 @@ export interface DmChannelPayload {
   otherUsername: string;
   otherPublicKey: string | null;
   otherAvatarUrl?: string | null;
+  /** Peer's account creation timestamp — used as the "Joined" date on profile cards. */
+  otherCreatedAt?: number;
   createdAt: number;
   lastMessageAt: number | null;
 }
@@ -139,8 +141,23 @@ export interface DmMessagePayload {
   ciphertext: string | null;
   nonce: string | null;
   body: string | null;
-  createdAt: number;
+  /** Snapshot of the sender's ECDH public key at send time — used for rotation-safe decryption. */
   senderEcdhPublicKey?: string | null;
+  createdAt: number;
+  editedAt?: number | null;
+  replyToId?: string | null;
+  replyTo?: {
+    id: string;
+    ciphertext: string | null;
+    nonce: string | null;
+    senderId: string;
+    senderName: string;
+  } | null;
+  fileUrl?: string | null;
+  fileName?: string | null;
+  fileSize?: number | null;
+  fileType?: string | null;
+  reactions?: { emoji: string; count: number; userIds: string[] }[];
 }
 
 export interface ReportPayload {

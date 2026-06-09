@@ -354,30 +354,6 @@ export async function saveDmKeyPair(pair: CryptoKeyPair): Promise<void> {
 /** Load a previously saved key pair from IndexedDB. Returns null if none. */
 export async function loadDmKeyPair(): Promise<CryptoKeyPair | null> {
   try {
-    // Migrate from old localStorage JWK format if present
-    const legacyRaw = localStorage.getItem('recline.dm.keypair');
-    if (legacyRaw) {
-      const { pub, priv } = JSON.parse(legacyRaw);
-      const [publicKey, privateKey] = await Promise.all([
-        crypto.subtle.importKey('jwk', pub, { name: 'ECDH', namedCurve: 'P-256' }, true, []),
-        crypto.subtle.importKey('jwk', priv, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']),
-      ]);
-      const pair = { publicKey, privateKey };
-      await saveDmKeyPair(pair);
-      localStorage.removeItem('recline.dm.keypair');
-      localStorage.removeItem('recline.dm.keypair.history');
-      // Clean up any legacy DM history / message-cache entries left in localStorage.
-      try {
-        const legacyKeys: string[] = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k && k.startsWith('dm_')) legacyKeys.push(k);
-        }
-        legacyKeys.forEach((k) => localStorage.removeItem(k));
-      } catch { /* non-fatal — key loading must not fail over cleanup errors */ }
-      return pair;
-    }
-
     const stored = await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }>('current');
     if (!stored) return null;
     const publicKey = await crypto.subtle.importKey(

@@ -1118,11 +1118,15 @@ export default function App() {
       });
     };
 
-    // DM chat cleared
+    // DM chat cleared — server only deletes the sender's own messages; preserve peer messages in state
     const onDmCleared = (data: { dmChannelId: string }) => {
-      setDmMessages((prev) => ({ ...prev, [data.dmChannelId]: [] }));
-      setDmUnreadMap((prev) => { const n = { ...prev }; delete n[data.dmChannelId]; return n; });
-      setDms((prev) => prev.map((d) => d.id === data.dmChannelId ? { ...d, lastMessageAt: null } : d));
+      const myId = userRef.current?.id;
+      setDmMessages((prev) => {
+        const msgs = prev[data.dmChannelId] ?? [];
+        // Filter out only the messages sent by the current user; peer messages survive on the server
+        const remaining = myId ? msgs.filter((m) => m.senderId !== myId) : msgs;
+        return { ...prev, [data.dmChannelId]: remaining };
+      });
     };
 
     // Kicked from a server — remove it from state and eject silently (#17/#18)
@@ -1347,8 +1351,8 @@ export default function App() {
       const pc = call.pc;
       await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
       // Drain pending ICE candidates
-      const pending: RTCIceCandidateInit[] = (call as any)._pendingCandidates ?? [];
-      (call as any)._pendingCandidates = [];
+      const pending = call._pendingCandidates ?? [];
+      call._pendingCandidates = [];
       for (const c of pending) {
         try { await pc.addIceCandidate(c); } catch { /* non-fatal */ }
       }
@@ -1362,8 +1366,8 @@ export default function App() {
       if (!call || call.dmChannelId !== data.dmChannelId || !call.pc) return;
       await call.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
       // Drain pending ICE candidates
-      const pending: RTCIceCandidateInit[] = (call as any)._pendingCandidates ?? [];
-      (call as any)._pendingCandidates = [];
+      const pending = call._pendingCandidates ?? [];
+      call._pendingCandidates = [];
       for (const c of pending) {
         try { await call.pc.addIceCandidate(c); } catch { /* non-fatal */ }
       }
@@ -1377,7 +1381,7 @@ export default function App() {
           await call.pc.addIceCandidate(data.candidate);
         } else if (call.pc) {
           // Queue until remote description is set
-          (call as any)._pendingCandidates = [...((call as any)._pendingCandidates ?? []), data.candidate];
+          call._pendingCandidates = [...(call._pendingCandidates ?? []), data.candidate];
         }
       } catch { /* non-fatal */ }
     };
@@ -2251,7 +2255,16 @@ export default function App() {
     // Fast path: try the current derived key (cache hit — no imports needed)
     const currentKey = await getDmKey(dmChannel);
     if (currentKey) {
-      try { return await decryptText(currentKey, ciphertext, nonce); } catch { /* fall through */ }
+      try { return await decryptText(currentKey, ciphertext, nonce); } catch {
+        // Cached AES key failed — may be stale after a peer key rotation where the DM list was
+        // refreshed (otherPublicKey updated) but the cache still holds the pre-rotation AES key.
+        // Invalidate and immediately re-derive with the current peer public key.
+        clearDmKey(dmChannel.id);
+        const freshKey = await getDmKey(dmChannel);
+        if (freshKey) {
+          try { return await decryptText(freshKey, ciphertext, nonce); } catch { /* fall through */ }
+        }
+      }
     }
 
     // BUG 9: single lazy-loaded history cache — avoids calling loadDmKeyHistory() twice
