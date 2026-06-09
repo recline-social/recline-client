@@ -468,6 +468,12 @@ export const api = {
   markDmRead: (dmChannelId: string) =>
     request<{ ok: boolean }>(`/api/dms/${dmChannelId}/read`, { method: 'PUT' }),
 
+  markServerRead: (serverId: string) =>
+    request<{ ok: boolean }>(`/api/servers/${serverId}/read-all`, { method: 'PUT' }),
+
+  markAllDmsRead: () =>
+    request<{ ok: boolean }>('/api/dms/read-all', { method: 'PUT' }),
+
   // ── Channels ──────────────────────────────────────────────────────────────
   deleteChannel: (serverId: string, channelId: string) =>
     request<{ ok: boolean }>(`/api/servers/${serverId}/channels/${channelId}`, { method: 'DELETE' }),

@@ -14,6 +14,8 @@ type Props = {
   friends: Friend[];
   onFriendsChange: (friends: Friend[]) => void;
   onOpenDmWithUser?: (userId: string) => void;
+  // FEAT-033: mark every DM conversation as read
+  onMarkAllRead?: () => void;
 };
 
 function timeAgo(ts: number | null): string {
@@ -25,7 +27,8 @@ function timeAgo(ts: number | null): string {
   return `${Math.floor(diff / 86_400_000)}d`;
 }
 
-export function DmList({ dms, activeDmId, unread, online, onSelect, friends, onFriendsChange, onOpenDmWithUser }: Props) {
+export function DmList({ dms, activeDmId, unread, online, onSelect, friends, onFriendsChange, onOpenDmWithUser, onMarkAllRead }: Props) {
+  const hasUnread = Object.values(unread).some((n) => n > 0);
   const [tab, setTab] = useState<Tab>('messages');
   const [addUsername, setAddUsername] = useState('');
   const [addLoading, setAddLoading] = useState(false);
@@ -133,6 +136,17 @@ export function DmList({ dms, activeDmId, unread, online, onSelect, friends, onF
         >
           Friends
         </TabBtn>
+        {onMarkAllRead && hasUnread && tab === 'messages' && (
+          <button
+            onClick={onMarkAllRead}
+            className="ml-auto h-6 w-6 grid place-items-center rounded-md text-ink-500 hover:text-ink-200 hover:bg-white/[0.05] transition-colors shrink-0"
+            title="Mark all as read"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="1 13 5 17 11 9" /><polyline points="11 13 15 17 23 7" />
+            </svg>
+          </button>
+        )}
       </div>
 
       {/* ── Messages tab ── */}

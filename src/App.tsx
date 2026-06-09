@@ -415,6 +415,8 @@ export default function App() {
 
   // ECDH DM key pair — generated once, persisted in IndexedDB, held in memory
   const dmKeyPairRef = useRef<CryptoKeyPair | null>(null);
+  // Single-flight guard for setupDmKeys — see ensureDmKeys()
+  const dmKeySetupPromiseRef = useRef<Promise<void> | null>(null);
   // Password held briefly (login → useEffect tick) for key backup setup, then cleared
   const setupPasswordRef = useRef<string>('');
   // Fresh DM list accessible in socket callbacks without stale-closure issues
@@ -494,6 +496,22 @@ export default function App() {
       delete lastReadSentRef.current[key]; // failed — let the next trigger retry
     });
   }, []);
+
+  // FEAT-033: bulk read-cursor actions (declutter unread badges)
+  function handleMarkServerRead(serverId: string) {
+    const chans = channelsByServerRef.current[serverId] ?? [];
+    setUnread((prev) => {
+      const next = { ...prev };
+      for (const c of chans) delete next[c.id];
+      return next;
+    });
+    api.markServerRead(serverId).catch(() => {});
+  }
+
+  function handleMarkAllDmsRead() {
+    setDmUnreadMap({});
+    api.markAllDmsRead().catch(() => {});
+  }
 
   // when the tab regains visibility, treat the active channel/DM as read
   useEffect(() => {
@@ -1477,9 +1495,17 @@ export default function App() {
       }
     });
     // Init ECDH DM key pair — restore from IndexedDB, server backup, or generate fresh.
+    // Failures are logged loudly and retried once: a silently-swallowed rejection
+    // here used to leave dmKeyPairRef null forever (= every DM send failing).
     const _setupPw = setupPasswordRef.current;
     setupPasswordRef.current = ''; // clear immediately — password must not linger
-    setupDmKeys(_setupPw).catch(() => {/* non-fatal */});
+    ensureDmKeys(_setupPw).catch((err) => {
+      console.error('[setupDmKeys] failed — retrying once in 2s:', err);
+      setTimeout(() => {
+        ensureDmKeys('').catch((err2) =>
+          console.error('[setupDmKeys] retry failed — DM encryption unavailable this session:', err2));
+      }, 2_000);
+    });
 
     // Pre-fetch DMs
     api.listDms().then((r) => setDms(r.dms)).catch(() => {});
@@ -2689,19 +2715,21 @@ export default function App() {
   }
 
   async function sendDmMessage(dmId: string, text: string, file?: { fileUrl: string; fileName: string; fileSize: number; fileType: string }, replyToId?: string | null) {
-    // Race guard: setupDmKeys runs concurrently with listDms on load — wait up to 8 s
-    // for the key pair to materialise before giving up.  Covers the window between
-    // component mount and the first IndexedDB read (or fresh key generation) completing.
+    // Self-heal: if the login-time key setup failed or is still in flight,
+    // actively (re-)run it now instead of blind-polling. ensureDmKeys is
+    // single-flight, so this either joins the in-progress attempt or starts a
+    // fresh one — the old 8 s poll could never recover from a failed setup.
     if (!dmKeyPairRef.current) {
-      const paired = await new Promise<boolean>((resolve) => {
-        const deadline = Date.now() + 8_000;
-        const id = setInterval(() => {
-          if (dmKeyPairRef.current) { clearInterval(id); resolve(true); }
-          else if (Date.now() >= deadline) { clearInterval(id); resolve(false); }
-        }, 80);
-      });
-      if (!paired) {
-        throw new Error('Unable to encrypt message — DM key not available. Try reloading.');
+      try {
+        await ensureDmKeys();
+      } catch (err) {
+        console.error('[sendDmMessage] key setup failed on demand:', err);
+      }
+      if (!dmKeyPairRef.current) {
+        throw new Error(
+          'Unable to encrypt message — your encryption keys could not be initialised. ' +
+          'Close any other Recline tabs and reload. If it persists, use Profile → Security → Sync keys.',
+        );
       }
     }
     const dmChannel = dmsRef.current.find((d) => d.id === dmId);
@@ -2891,6 +2919,22 @@ export default function App() {
     } catch { return false; }
   }
 
+  /**
+   * Single-flight wrapper around setupDmKeys: concurrent callers (login effect,
+   * a retry, a send-path self-heal) share one in-progress attempt instead of
+   * racing IndexedDB and the key-registration endpoint against each other.
+   * Resolves immediately when the key pair already exists.
+   */
+  function ensureDmKeys(pw = ''): Promise<void> {
+    if (dmKeyPairRef.current) return Promise.resolve();
+    if (!dmKeySetupPromiseRef.current) {
+      dmKeySetupPromiseRef.current = setupDmKeys(pw).finally(() => {
+        dmKeySetupPromiseRef.current = null;
+      });
+    }
+    return dmKeySetupPromiseRef.current;
+  }
+
   async function setupDmKeys(suppliedPw: string): Promise<void> {
     // M-7: Raw password is no longer cached in sessionStorage (was 'recline.session.pw').
     // On page refresh, suppliedPw is empty and we rely on IndexedDB for the key pair.
@@ -2910,8 +2954,19 @@ export default function App() {
 
     let pair = await loadDmKeyPair();
 
+    // A corrupt stored pair must not strand the whole key pipeline — treat it
+    // as missing and fall through to backup-restore / fresh generation.
+    let localJwk = '';
     if (pair) {
-      const localJwk = await exportPublicKeyJwk(pair.publicKey);
+      try {
+        localJwk = await exportPublicKeyJwk(pair.publicKey);
+      } catch (err) {
+        console.error('[setupDmKeys] stored key pair unusable — regenerating:', err);
+        pair = null;
+      }
+    }
+
+    if (pair) {
 
       // ── Case 1: keys match ────────────────────────────────────────────────
       if (jwkPointMatches(localJwk, serverKeyJwk)) {
@@ -2965,7 +3020,9 @@ export default function App() {
 
         if (restored) {
           const restoredJwk = await exportPublicKeyJwk(restored.publicKey);
-          await saveDmKeyPair(restored);
+          // Persistence failure must not block using the key this session.
+          await saveDmKeyPair(restored).catch((err) =>
+            console.error('[setupDmKeys] could not persist restored key (continuing in-memory):', err));
           pair = restored;
           // If the restored key already matches the server key, no re-registration needed.
           if (!jwkPointMatches(restoredJwk, serverKeyJwk)) {
@@ -3029,8 +3086,12 @@ export default function App() {
 
     // Generate a fresh key pair — either first-ever login or no backup available.
     pair = await generateDmKeyPair();
-    await saveDmKeyPair(pair);
+    // Set the ref BEFORE any persistence/network step — an IndexedDB write
+    // failure must degrade to an in-memory key, never to "no key at all"
+    // (the old unguarded await here stranded dmKeyPairRef as null forever).
     dmKeyPairRef.current = pair;
+    await saveDmKeyPair(pair).catch((err) =>
+      console.error('[setupDmKeys] could not persist fresh key (continuing in-memory):', err));
     setDmMsgLoaded({});
     const freshJwk = await exportPublicKeyJwk(pair.publicKey);
     // CLIENT-004: await registerPublicKey before setDmKeysReady so the server
@@ -3433,6 +3494,7 @@ export default function App() {
               friends={friends}
               onFriendsChange={setFriends}
               onOpenDmWithUser={openDm}
+              onMarkAllRead={handleMarkAllDmsRead}
             />
           </div>
           {/* Mobile slide-in DM list */}
@@ -3447,6 +3509,7 @@ export default function App() {
                 friends={friends}
                 onFriendsChange={setFriends}
                 onOpenDmWithUser={(userId) => { openDm(userId); setMobileSidebarOpen(false); }}
+                onMarkAllRead={handleMarkAllDmsRead}
               />
             </div>
           </div>
@@ -3561,6 +3624,7 @@ export default function App() {
               onToggleServerMute={() => handleToggleMute('server', activeServer.id)}
               onToggleChannelMute={(cid) => handleToggleMute('channel', cid)}
               onOpenSearch={() => setSearchOpen(true)}
+              onMarkAllRead={() => handleMarkServerRead(activeServer.id)}
             />
           </div>
           {/* Resize handle — desktop only */}
@@ -3588,6 +3652,7 @@ export default function App() {
               onToggleServerMute={() => handleToggleMute('server', activeServer.id)}
               onToggleChannelMute={(cid) => handleToggleMute('channel', cid)}
               onOpenSearch={() => { setSearchOpen(true); setMobileSidebarOpen(false); }}
+              onMarkAllRead={() => handleMarkServerRead(activeServer.id)}
             />
           </div>
 

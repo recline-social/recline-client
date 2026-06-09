@@ -21,6 +21,8 @@ type Props = {
   onToggleChannelMute?: (channelId: string) => void;
   // FEAT-020: open message search
   onOpenSearch?: () => void;
+  // FEAT-033: mark every channel in this server as read
+  onMarkAllRead?: () => void;
 };
 
 function BellIcon() {
@@ -77,7 +79,9 @@ export function ChannelList(props: Props) {
     onToggleServerMute,
     onToggleChannelMute,
     onOpenSearch,
+    onMarkAllRead,
   } = props;
+  const hasUnread = channels.some((c) => (unread[c.id] ?? 0) > 0);
   const [creating, setCreating] = useState<'text' | 'voice' | null>(null);
   const [name, setName] = useState('');
   const [copied, setCopied] = useState(false);
@@ -118,6 +122,17 @@ export function ChannelList(props: Props) {
           <div className="text-[13px] font-semibold truncate min-w-0 text-ink-100">{server.name}</div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
+          {onMarkAllRead && hasUnread && (
+            <button
+              onClick={onMarkAllRead}
+              className="h-6 w-6 grid place-items-center rounded-md text-ink-500 hover:text-ink-200 hover:bg-white/[0.05] transition-colors"
+              title="Mark all as read"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="1 13 5 17 11 9" /><polyline points="11 13 15 17 23 7" />
+              </svg>
+            </button>
+          )}
           {onOpenSearch && (
             <button
               onClick={onOpenSearch}

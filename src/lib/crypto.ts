@@ -147,6 +147,18 @@ const IDB_STORE   = 'keypairs';
 
 function openKeyDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
+    // Hard timeout: indexedDB.open can hang FOREVER without firing any event
+    // (e.g. an old tab holding the connection during a version change). A hung
+    // open here used to silently strand setupDmKeys → no key pair → every DM
+    // send failed with 'DM key not available'. Better to fail fast and let the
+    // caller retry/surface an error than to hang the whole key pipeline.
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('IndexedDB open timed out — close other Recline tabs and retry'));
+    }, 5_000);
+
     const req = indexedDB.open(IDB_NAME, IDB_VERSION);
     req.onupgradeneeded = (e) => {
       const db = (e.target as IDBOpenDBRequest).result;
@@ -154,8 +166,28 @@ function openKeyDb(): Promise<IDBDatabase> {
         db.createObjectStore(IDB_STORE);
       }
     };
-    req.onsuccess  = (e) => resolve((e.target as IDBOpenDBRequest).result);
-    req.onerror    = () => reject(req.error);
+    req.onblocked = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error('IndexedDB blocked by another tab — close other Recline tabs and retry'));
+    };
+    req.onsuccess = (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const db = (e.target as IDBOpenDBRequest).result;
+      // Release the connection promptly if a future deploy bumps IDB_VERSION,
+      // so THIS tab never becomes the one that blocks everyone else.
+      db.onversionchange = () => { try { db.close(); } catch { /* already closed */ } };
+      resolve(db);
+    };
+    req.onerror = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(req.error);
+    };
   });
 }
 
