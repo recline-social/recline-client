@@ -32,7 +32,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZDOTVEMTY4RTVBODI0MjEKUldRaEpLamxhTkdWYkljTVBnazJoVkorb0FZZ0lYbUl2ZXQ0d3JCZ282RTBMaVNwUjByek90b2IK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZDOTVEMTY4RTVBODI0MjEKUldRaEpLamxhTkdWYkljTVBnazJoVkorb0FZZ0lYbUl2ZXQ4d3JCZ282RTBMaVNwUjByek90b2IK",
       "endpoints": [
         "https://github.com/recline-social/recline-client/releases/latest/download/latest.json"
       ]
