@@ -32,6 +32,10 @@ type Props = {
   onClickUser?: (userId: string) => void;
   /** Optional node rendered in the channel header (e.g. BroadcastButton) */
   headerActions?: ReactNode;
+  /** True when the channel requires a tier the user doesn't have. */
+  isLocked?: boolean;
+  /** Opens the subscribe modal (only relevant when isLocked is true). */
+  onSubscribe?: () => void;
   /** List of pinned messages for this channel (decrypted). */
   pinnedMessages?: PinnedMessage[];
   /** Called when a message should be pinned or unpinned. */
@@ -62,6 +66,8 @@ export function ChatPanel({
   onOpenMembers,
   onClickUser,
   headerActions,
+  isLocked,
+  onSubscribe,
   sparksBalance,
   pinnedMessages,
   onPin,
@@ -315,88 +321,110 @@ export function ChatPanel({
         </div>
       )}
 
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto py-4">
-        {hasMore && (
-          <div className="flex justify-center pb-2 pt-1">
-            <button
-              onClick={handleLoadMore}
-              disabled={loadingMore}
-              className="text-[11px] text-ink-400 hover:text-ink-200 bg-ink-800/50 hover:bg-ink-700/60 border border-white/[0.06] rounded-full px-4 py-1.5 transition-colors disabled:opacity-50"
-            >
-              {loadingMore ? 'Loading…' : 'Load older messages'}
-            </button>
+      {isLocked ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8 text-center">
+          <div className="w-12 h-12 rounded-full bg-accent-violet/10 flex items-center justify-center">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent-violet">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
           </div>
-        )}
-        {messages.length === 0 ? (
-          <EmptyState channelName={channel.name} encrypted={encrypted} />
-        ) : (
-          grouped.map(({ msg, showHeader }) => {
-            const isPinned = pinnedMessages?.some((p) => p.id === msg.id) ?? false;
-            return (
-              <MessageRow
-                key={msg.id}
-                msg={msg}
-                sender={members[msg.senderId]}
-                showHeader={showHeader}
-                isSelf={msg.senderId === me.id}
-                meId={me.id}
-                members={members}
-                sparksBalance={sparksBalance}
-                onDelete={msg.senderId === me.id ? () => onDelete(msg.id) : undefined}
-                onEdit={msg.senderId === me.id ? (newText) => onEdit(msg.id, newText) : undefined}
-                onReaction={encrypted ? (emoji) => onReaction(msg.id, emoji) : undefined}
-                onSpark={onSpark && encrypted && msg.senderId !== me.id ? (msgId, amount) => onSpark(msgId, amount) : undefined}
-                onReport={onReport && msg.senderId !== me.id
-                  ? () => setReportTarget({ msgId: msg.id, senderId: msg.senderId })
-                  : undefined}
-                onReply={encrypted ? (m) => {
-                  const senderName = members[m.senderId]?.displayName ?? members[m.senderId]?.username ?? 'unknown';
-                  setReplyingTo({
-                    id: m.id,
-                    senderName,
-                    bodyPreview: m.failed ? '[encrypted]' : m.body,
-                  });
-                } : undefined}
-                onClickUser={onClickUser}
-                onPin={canPin && encrypted
-                  ? () => (isPinned ? onUnpin?.(msg.id) : onPin?.(msg.id))
-                  : undefined}
-                isPinned={isPinned}
-              />
-            );
-          })
-        )}
-      </div>
+          <div>
+            <div className="text-[15px] font-semibold text-ink-100 mb-1">This channel is members-only</div>
+            <div className="text-[13px] text-ink-400">Subscribe to a tier to unlock access to #{channel.name}.</div>
+          </div>
+          {onSubscribe && (
+            <button onClick={onSubscribe} className="btn-primary px-6 py-2 text-sm">
+              See plans
+            </button>
+          )}
+        </div>
+      ) : (
+        <>
+          <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto py-4">
+            {hasMore && (
+              <div className="flex justify-center pb-2 pt-1">
+                <button
+                  onClick={handleLoadMore}
+                  disabled={loadingMore}
+                  className="text-[11px] text-ink-400 hover:text-ink-200 bg-ink-800/50 hover:bg-ink-700/60 border border-white/[0.06] rounded-full px-4 py-1.5 transition-colors disabled:opacity-50"
+                >
+                  {loadingMore ? 'Loading…' : 'Load older messages'}
+                </button>
+              </div>
+            )}
+            {messages.length === 0 ? (
+              <EmptyState channelName={channel.name} encrypted={encrypted} />
+            ) : (
+              grouped.map(({ msg, showHeader }) => {
+                const isPinned = pinnedMessages?.some((p) => p.id === msg.id) ?? false;
+                return (
+                  <MessageRow
+                    key={msg.id}
+                    msg={msg}
+                    sender={members[msg.senderId]}
+                    showHeader={showHeader}
+                    isSelf={msg.senderId === me.id}
+                    meId={me.id}
+                    members={members}
+                    sparksBalance={sparksBalance}
+                    onDelete={msg.senderId === me.id ? () => onDelete(msg.id) : undefined}
+                    onEdit={msg.senderId === me.id ? (newText) => onEdit(msg.id, newText) : undefined}
+                    onReaction={encrypted ? (emoji) => onReaction(msg.id, emoji) : undefined}
+                    onSpark={onSpark && encrypted && msg.senderId !== me.id ? (msgId, amount) => onSpark(msgId, amount) : undefined}
+                    onReport={onReport && msg.senderId !== me.id
+                      ? () => setReportTarget({ msgId: msg.id, senderId: msg.senderId })
+                      : undefined}
+                    onReply={encrypted ? (m) => {
+                      const senderName = members[m.senderId]?.displayName ?? members[m.senderId]?.username ?? 'unknown';
+                      setReplyingTo({
+                        id: m.id,
+                        senderName,
+                        bodyPreview: m.failed ? '[encrypted]' : m.body,
+                      });
+                    } : undefined}
+                    onClickUser={onClickUser}
+                    onPin={canPin && encrypted
+                      ? () => (isPinned ? onUnpin?.(msg.id) : onPin?.(msg.id))
+                      : undefined}
+                    isPinned={isPinned}
+                  />
+                );
+              })
+            )}
+          </div>
 
-      <div className="shrink-0"><TypingIndicator typing={typingIds} members={members} /></div>
+          <div className="shrink-0"><TypingIndicator typing={typingIds} members={members} /></div>
 
-      <Composer
-        placeholder={`Message #${channel.name}`}
-        disabled={!encrypted}
-        onSend={async (text, animationType, attachment) => {
-          const currentReplyToId = replyingTo?.id ?? null;
-          setReplyingTo(null);
-          await onSend(text, currentReplyToId, animationType, attachment);
-        }}
-        onTyping={onTyping}
-        replyingTo={replyingTo}
-        onCancelReply={() => setReplyingTo(null)}
-        members={members}
-        sparksBalance={sparksBalance}
-        externalDroppedFile={panelDroppedFile}
-        onExternalDropConsumed={() => setPanelDroppedFile(null)}
-      />
+          <Composer
+            placeholder={`Message #${channel.name}`}
+            disabled={!encrypted}
+            onSend={async (text, animationType, attachment) => {
+              const currentReplyToId = replyingTo?.id ?? null;
+              setReplyingTo(null);
+              await onSend(text, currentReplyToId, animationType, attachment);
+            }}
+            onTyping={onTyping}
+            replyingTo={replyingTo}
+            onCancelReply={() => setReplyingTo(null)}
+            members={members}
+            sparksBalance={sparksBalance}
+            externalDroppedFile={panelDroppedFile}
+            onExternalDropConsumed={() => setPanelDroppedFile(null)}
+          />
 
-      {reportTarget && onReport && (
-        <ReportDialog
-          open
-          onClose={() => setReportTarget(null)}
-          reportedUsername={members[reportTarget.senderId]?.username}
-          onSubmit={async (reason, note) => {
-            await onReport(reportTarget.msgId, reportTarget.senderId, reason, note);
-            setReportTarget(null);
-          }}
-        />
+          {reportTarget && onReport && (
+            <ReportDialog
+              open
+              onClose={() => setReportTarget(null)}
+              reportedUsername={members[reportTarget.senderId]?.username}
+              onSubmit={async (reason, note) => {
+                await onReport(reportTarget.msgId, reportTarget.senderId, reason, note);
+                setReportTarget(null);
+              }}
+            />
+          )}
+        </>
       )}
     </div>
   );

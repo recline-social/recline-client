@@ -1398,6 +1398,7 @@ function TiersTab({ serverId }: { serverId: string }) {
   const [addDesc, setAddDesc] = useState('');
   const [addPrice, setAddPrice] = useState('');
   const [addPosition, setAddPosition] = useState('');
+  const [addStripePrice, setAddStripePrice] = useState('');
   const [addErr, setAddErr] = useState('');
 
   // Edit state: tier id → partial edit
@@ -1406,6 +1407,11 @@ function TiersTab({ serverId }: { serverId: string }) {
   const [editDesc, setEditDesc] = useState('');
   const [editPrice, setEditPrice] = useState('');
   const [editPosition, setEditPosition] = useState('');
+  const [editStripePrice, setEditStripePrice] = useState('');
+
+  // Channel assignment
+  const [channels, setChannels] = useState<{ id: string; name: string; type: string; tierRequired: string | null }[]>([]);
+  const [channelBusy, setChannelBusy] = useState<string | null>(null);
 
   // Delete confirm
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -1417,9 +1423,18 @@ function TiersTab({ serverId }: { serverId: string }) {
 
   useEffect(() => {
     setLoading(true);
-    api.tiers.list(serverId)
-      .then((r) => setTiers(r.tiers))
-      .catch((e: Error) => setErr(e.message))
+    Promise.all([
+      api.tiers.list(serverId),
+      api.listChannels(serverId),
+    ]).then(([r, c]) => {
+      setTiers(r.tiers);
+      setChannels(c.channels.filter(ch => ch.type === 'text').map(ch => ({
+        id: ch.id,
+        name: ch.name,
+        type: ch.type,
+        tierRequired: ch.tier_required ?? null,
+      })));
+    }).catch((e: Error) => setErr(e.message))
       .finally(() => setLoading(false));
   }, [serverId]);
 
@@ -1429,11 +1444,13 @@ function TiersTab({ serverId }: { serverId: string }) {
     setEditDesc(tier.description ?? '');
     setEditPrice(String(tier.priceCents / 100));
     setEditPosition(String(tier.position));
+    setEditStripePrice(tier.stripePriceId ?? '');
     setErr('');
   }
 
   function closeEdit() {
     setEditId(null);
+    setEditStripePrice('');
     setErr('');
   }
 
@@ -1454,9 +1471,10 @@ function TiersTab({ serverId }: { serverId: string }) {
         description: addDesc.trim() || undefined,
         priceCents,
         position,
+        stripePriceId: addStripePrice.trim() || undefined,
       });
       setTiers((prev) => [...prev, tier].sort((a, b) => a.position - b.position));
-      setAddName(''); setAddDesc(''); setAddPrice(''); setAddPosition('');
+      setAddName(''); setAddDesc(''); setAddPrice(''); setAddPosition(''); setAddStripePrice('');
       setAdding(false);
     } catch (ex: unknown) {
       setAddErr(ex instanceof Error ? ex.message : 'Failed to create tier');
@@ -1483,6 +1501,7 @@ function TiersTab({ serverId }: { serverId: string }) {
         description: editDesc.trim() || undefined,
         priceCents,
         position,
+        stripePriceId: editStripePrice.trim() || undefined,
       });
       setTiers((prev) =>
         prev.map((t) => t.id === editId ? { ...t, ...tier } : t)
@@ -1512,6 +1531,18 @@ function TiersTab({ serverId }: { serverId: string }) {
       setErr(ex instanceof Error ? ex.message : 'Failed to delete tier');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleSetChannelTier(channelId: string, tierId: string | null) {
+    setChannelBusy(channelId);
+    try {
+      await api.tiers.setChannelTier(serverId, channelId, tierId);
+      setChannels(prev => prev.map(ch => ch.id === channelId ? { ...ch, tierRequired: tierId } : ch));
+    } catch (ex: unknown) {
+      setErr(ex instanceof Error ? ex.message : 'Failed to update channel');
+    } finally {
+      setChannelBusy(null);
     }
   }
 
@@ -1593,6 +1624,19 @@ function TiersTab({ serverId }: { serverId: string }) {
             </div>
           </div>
 
+          <div className="space-y-1.5">
+            <label className="block text-[11px] uppercase tracking-widest text-ink-300 font-semibold">
+              Stripe Price ID <span className="text-ink-500 normal-case font-normal">(optional — required for paid subscriptions)</span>
+            </label>
+            <input
+              value={editStripePrice}
+              onChange={(e) => setEditStripePrice(e.target.value)}
+              placeholder="price_..."
+              className="input w-full text-sm font-mono"
+              disabled={busy}
+            />
+          </div>
+
           <div className="flex gap-2 pt-1">
             <button
               type="submit"
@@ -1640,7 +1684,7 @@ function TiersTab({ serverId }: { serverId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="text-[12px] text-ink-300">
-          Membership tiers — set which tier a channel requires in channel settings.
+          Membership tiers — assign channels to tiers below.
         </div>
         <button
           onClick={() => { setAdding((v) => !v); setAddErr(''); }}
@@ -1721,6 +1765,18 @@ function TiersTab({ serverId }: { serverId: string }) {
               />
             </div>
           </div>
+          <div className="space-y-1.5">
+            <label className="block text-[11px] uppercase tracking-widest text-ink-300 font-semibold">
+              Stripe Price ID <span className="text-ink-500 normal-case font-normal">(optional — required for paid subscriptions)</span>
+            </label>
+            <input
+              value={addStripePrice}
+              onChange={(e) => setAddStripePrice(e.target.value)}
+              placeholder="price_..."
+              className="input w-full text-sm font-mono"
+              disabled={busy}
+            />
+          </div>
           <div className="flex gap-2">
             <button
               type="button"
@@ -1746,30 +1802,61 @@ function TiersTab({ serverId }: { serverId: string }) {
       ) : sorted.length === 0 ? (
         <div className="text-center py-8 text-ink-400 text-[12px]">No tiers yet. Add one above.</div>
       ) : (
-        <div className="space-y-1">
+        <div className="space-y-2">
           {sorted.map((tier) => (
-            <button
+            <div
               key={tier.id}
-              onClick={() => openEdit(tier)}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/[0.04] transition-colors text-left group"
+              className="bg-ink-800/60 border border-white/[0.06] rounded-xl px-4 py-3 space-y-2"
             >
-              <div className="flex-1 min-w-0">
-                <div className="text-[13px] font-medium text-ink-100 truncate">{tier.name}</div>
-                {tier.description && (
-                  <div className="text-[11px] text-ink-400 truncate">{tier.description}</div>
-                )}
+              <div className="flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] font-medium text-ink-100 truncate">{tier.name}</div>
+                  {tier.description && (
+                    <div className="text-[11px] text-ink-400 truncate">{tier.description}</div>
+                  )}
+                </div>
+                <div className="text-[12px] text-ink-300 shrink-0">
+                  ${(tier.priceCents / 100).toFixed(2)}/mo
+                </div>
+                <div className="text-[10px] text-ink-500 shrink-0">pos {tier.position}</div>
+                <button
+                  onClick={() => openEdit(tier)}
+                  className="text-[11px] text-ink-400 hover:text-ink-200 px-2 py-1 rounded hover:bg-white/[0.05] transition-colors shrink-0"
+                >
+                  Edit
+                </button>
               </div>
-              <div className="text-[12px] text-ink-300 shrink-0">
-                ${(tier.priceCents / 100).toFixed(2)}/mo
+
+              {/* Channels requiring this tier */}
+              <div className="mt-2">
+                <div className="text-[11px] uppercase tracking-widest text-ink-400 font-semibold mb-1.5">Channels</div>
+                <div className="space-y-1">
+                  {channels.map(ch => {
+                    const isAssigned = ch.tierRequired === tier.id;
+                    return (
+                      <label key={ch.id} className="flex items-center gap-2 cursor-pointer group">
+                        <input
+                          type="checkbox"
+                          checked={isAssigned}
+                          disabled={channelBusy === ch.id}
+                          onChange={() => handleSetChannelTier(ch.id, isAssigned ? null : tier.id)}
+                          className="w-3.5 h-3.5 rounded accent-accent-violet"
+                        />
+                        <span className={`text-[12px] ${isAssigned ? 'text-ink-100' : 'text-ink-400'}`}>
+                          #{ch.name}
+                        </span>
+                        {channelBusy === ch.id && (
+                          <span className="text-[10px] text-ink-500">saving…</span>
+                        )}
+                      </label>
+                    );
+                  })}
+                  {channels.length === 0 && (
+                    <span className="text-[12px] text-ink-500">No text channels yet</span>
+                  )}
+                </div>
               </div>
-              <div className="text-[10px] text-ink-500 shrink-0">pos {tier.position}</div>
-              <svg
-                width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                className="text-ink-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-              >
-                <polyline points="9 18 15 12 9 6" />
-              </svg>
-            </button>
+            </div>
           ))}
         </div>
       )}

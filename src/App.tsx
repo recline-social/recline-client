@@ -12,6 +12,7 @@ import { CreateServerDialog, JoinServerDialog, UnlockDialog } from './components
 import { ProfileDialog } from './components/ProfileDialog';
 import { InviteJoinModal } from './components/InviteJoinModal';
 import { ServerSettingsDialog } from './components/ServerSettingsDialog';
+import { TierSubscribeModal } from './components/TierSubscribeModal';
 import { DmList } from './components/DmList';
 import { DmView } from './components/DmView';
 import { DmCallIncoming } from './components/DmCallIncoming';
@@ -269,8 +270,12 @@ export default function App() {
   // bumped when a pin/unpin event invalidates a channel's pin cache
   const [pinsVersion, setPinsVersion] = useState(0);
 
-  // tier-required upgrade prompt — set when a send is rejected with 'tier_required'
+  // tier-required upgrade prompt — set when a send is rejected or history blocked by 'tier_required'
   const [tierRequiredChannelId, setTierRequiredChannelId] = useState<string | null>(null);
+  // subscribe modal state
+  const [showSubscribeModal, setShowSubscribeModal] = useState(false);
+  // user's active tier per server — loaded on server switch
+  const [myTierByServer, setMyTierByServer] = useState<Record<string, { tierId: string | null; tierName: string | null; status: string | null }>>({});
 
   // encryption key readiness per server
   const [keysReady, setKeysReady] = useState<Record<string, boolean>>({});
@@ -630,6 +635,41 @@ export default function App() {
       if (supporterPollTimerRef.current) clearTimeout(supporterPollTimerRef.current);
     };
   }, [user?.id]);
+
+  /* ------------------------ Stripe tier-activated return ------------------------ */
+  // When Stripe redirects back after a successful checkout, the STRIPE_SUCCESS_URL
+  // includes ?tier_activated=1 so we know to refresh the user's tier status.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('tier_activated')) return;
+    // Strip the param from the URL without a page reload
+    params.delete('tier_activated');
+    const newSearch = params.toString();
+    window.history.replaceState({}, '', newSearch ? `?${newSearch}` : window.location.pathname);
+    // Poll myTier up to 5 times with 2s gaps to catch the webhook landing
+    let attempts = 0;
+    const poll = setInterval(() => {
+      attempts++;
+      // activeServerId may not be set yet — use a ref-based approach via state callback
+      setActiveServerId((sid) => {
+        if (sid) {
+          api.tiers.myTier(sid).then((r) => {
+            setMyTierByServer((prev) => ({ ...prev, [sid]: r }));
+            if (r.tierId || attempts >= 5) {
+              clearInterval(poll);
+              // Reload channels so lock icons clear
+              setChannelsByServer((prev) => { const next = { ...prev }; delete next[sid]; return next; });
+              setTierRequiredChannelId(null);
+            }
+          }).catch(() => { if (attempts >= 5) clearInterval(poll); });
+        }
+        if (attempts >= 5) clearInterval(poll);
+        return sid;
+      });
+    }, 2000);
+    return () => clearInterval(poll);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /* ------------------------ Auth bootstrap ------------------------ */
   useEffect(() => {
@@ -1691,6 +1731,10 @@ export default function App() {
   /* ------------------------ Active server load ------------------------ */
   useEffect(() => {
     if (!activeServerId) return;
+    // Load current user's tier for this server (used by subscribe modal)
+    api.tiers.myTier(activeServerId).then((r) => {
+      setMyTierByServer((prev) => ({ ...prev, [activeServerId]: r }));
+    }).catch(() => {}); // non-fatal
     if (!channelsByServer[activeServerId]) {
       api.listChannels(activeServerId).then((r) => {
         const mapped = r.channels.map(ch => ({ ...ch, tierRequired: ch.tier_required ?? null }));
@@ -1784,7 +1828,13 @@ export default function App() {
           },
         };
       });
-    }).catch(() => {/* non-fatal — leave channel unloaded so a retry can refetch */});
+    }).catch((err: Error & { status?: number }) => {
+      if (cancelled) return;
+      if (err.status === 403 || err.message === 'tier_required') {
+        setTierRequiredChannelId(activeChannelId);
+      }
+      // non-fatal — leave channel unloaded so a retry can refetch
+    });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeChannelId, activeServerId, keysReady]);
@@ -3336,6 +3386,8 @@ export default function App() {
                   onEdit={handleEditMessage}
                   onReaction={handleReaction}
                   onSpark={handleSparkMessage}
+                  isLocked={!!(activeChannel.tierRequired && tierRequiredChannelId === activeChannelId)}
+                  onSubscribe={activeServerId ? () => { setShowSubscribeModal(true); } : undefined}
                   onReport={activeServerId ? async (messageId, senderId, reason, note) => {
                     await api.submitReport(activeServerId, {
                       reason,
@@ -3561,6 +3613,24 @@ export default function App() {
       {showSupporterToast && (
         <SupporterToast onDismiss={() => setShowSupporterToast(false)} />
       )}
+      {showSubscribeModal && activeServerId && (
+        <TierSubscribeModal
+          serverId={activeServerId}
+          serverName={servers.find(s => s.id === activeServerId)?.name ?? ''}
+          channelName={tierRequiredChannelId ? (channelsByServer[activeServerId]?.find(c => c.id === tierRequiredChannelId)?.name) : undefined}
+          onClose={() => setShowSubscribeModal(false)}
+          onSubscribed={() => {
+            // Refresh tier status and channel list after free-tier join
+            api.tiers.myTier(activeServerId).then((r) => {
+              setMyTierByServer((prev) => ({ ...prev, [activeServerId]: r }));
+            }).catch(() => {});
+            setTierRequiredChannelId(null);
+            // Force reload channels so lock icons update
+            setChannelsByServer((prev) => { const next = { ...prev }; delete next[activeServerId]; return next; });
+            setShowSubscribeModal(false);
+          }}
+        />
+      )}
       {tierRequiredChannelId && (
         <div
           className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-2xl px-4 py-3 max-w-sm w-full"
@@ -3573,8 +3643,16 @@ export default function App() {
           <div className="text-violet-400 text-lg shrink-0">🔒</div>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-semibold text-white/90">Subscription required</div>
-            <div className="text-xs text-white/50 mt-0.5">This channel is for subscribers only. Upgrade your tier to post.</div>
+            <div className="text-xs text-white/50 mt-0.5">This channel is for subscribers only.</div>
           </div>
+          {activeServerId && (
+            <button
+              onClick={() => setShowSubscribeModal(true)}
+              className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg bg-accent-violet/20 text-accent-violet hover:bg-accent-violet/30 transition-colors"
+            >
+              See plans
+            </button>
+          )}
           <button
             onClick={() => setTierRequiredChannelId(null)}
             className="text-white/30 hover:text-white/60 transition-colors shrink-0 text-xl leading-none"

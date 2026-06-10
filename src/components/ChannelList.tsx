@@ -403,7 +403,7 @@ function ChannelItem({
           {name}
         </span>
         {tierRequired && (
-          <span title="Tier required" className="shrink-0">
+          <span title="Tier required — subscribe to access this channel" className="shrink-0">
             <LockIcon />
           </span>
         )}

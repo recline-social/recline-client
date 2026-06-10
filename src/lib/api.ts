@@ -824,13 +824,13 @@ export const api = {
     list: (serverId: string) =>
       request<{ tiers: import('../types').TierLevel[] }>(`/api/servers/${serverId}/tiers`),
 
-    create: (serverId: string, body: { name: string; description?: string; priceCents: number; position?: number }) =>
+    create: (serverId: string, body: { name: string; description?: string; priceCents: number; position?: number; stripePriceId?: string }) =>
       request<{ tier: import('../types').TierLevel }>(`/api/servers/${serverId}/tiers`, {
         method: 'POST',
         body: JSON.stringify(body),
       }),
 
-    update: (serverId: string, tierId: string, body: { name?: string; description?: string; priceCents?: number; position?: number }) =>
+    update: (serverId: string, tierId: string, body: { name?: string; description?: string; priceCents?: number; position?: number; stripePriceId?: string }) =>
       request<{ tier: import('../types').TierLevel }>(`/api/servers/${serverId}/tiers/${tierId}`, {
         method: 'PATCH',
         body: JSON.stringify(body),
@@ -852,6 +852,9 @@ export const api = {
 
     subscribe: (serverId: string, tierId: string) =>
       request<{ url: string }>(`/api/servers/${serverId}/tiers/${tierId}/subscribe`, { method: 'POST' }),
+
+    joinFree: (serverId: string, tierId: string) =>
+      request<{ ok: boolean }>(`/api/servers/${serverId}/tiers/${tierId}/join`, { method: 'POST' }),
   },
 
   invites: {
