@@ -23,6 +23,8 @@ type Props = {
   onReply?: (msg: DecodedMessage) => void;
   onClickUser?: (userId: string) => void;
   onSpark?: (messageId: string, amount: number) => Promise<void>;
+  onPin?: () => void;
+  isPinned?: boolean;
   members?: Record<string, Member>;
   meId?: string;
   sparksBalance?: number;
@@ -252,7 +254,7 @@ function SparkPickerPortal({
   );
 }
 
-export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, onReaction, onReport, onReply, onClickUser, onSpark, members, meId, sparksBalance }: Props) {
+export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, onReaction, onReport, onReply, onClickUser, onSpark, onPin, isPinned, members, meId, sparksBalance }: Props) {
   const name = sender?.displayName ?? sender?.username ?? 'unknown';
   const c = userColor(sender?.id ?? msg.senderId, isSelf);
   const [editing, setEditing] = useState(false);
@@ -628,6 +630,23 @@ export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, 
                 document.body,
               )}
             </div>
+          )}
+          {onPin && (
+            <button
+              onClick={onPin}
+              title={isPinned ? 'Unpin message' : 'Pin message'}
+              aria-label={isPinned ? 'Unpin message' : 'Pin message'}
+              className={`h-7 w-7 grid place-items-center rounded-md bg-ink-800/90 border border-white/5 transition-colors ${
+                isPinned
+                  ? 'text-amber-400 hover:text-amber-300 hover:bg-amber-500/15'
+                  : 'text-ink-300 hover:text-amber-400 hover:bg-amber-500/15'
+              }`}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill={isPinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="17" x2="12" y2="22" />
+                <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
+              </svg>
+            </button>
           )}
           {onReply && (
             <button

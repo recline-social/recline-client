@@ -41,7 +41,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const url = (getServerUrl() || '') + path;
   const res = await fetch(url, { ...init, headers });
   const text = await res.text();
-  const data = text ? JSON.parse(text) : {};
+  let data: Record<string, unknown> = {};
+  try { if (text) data = JSON.parse(text); } catch { /* non-JSON body (e.g. HTML error page) — data stays {} */ }
   if (!res.ok) {
     if (
       res.status === 401 &&
@@ -51,7 +52,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     ) {
       _onUnauthorized?.();
     }
-    const err = new Error(data?.error ?? `HTTP ${res.status}`);
+    const err = new Error((data?.error as string | undefined) ?? `HTTP ${res.status}`);
     (err as Error & { status?: number }).status = res.status;
     throw err;
   }
@@ -99,6 +100,7 @@ export interface ChannelPayload {
   type: 'text' | 'voice';
   position: number;
   topic?: string | null;
+  tier_required?: string | null;
 }
 
 export interface MemberPayload {
@@ -410,6 +412,20 @@ export const api = {
     if (before !== undefined) params.set('before', before);
     return request<{ messages: MessagePayload[] }>(`/api/channels/${channelId}/messages?${params}`);
   },
+
+  getPinnedMessages: (channelId: string) =>
+    request<{
+      pins: {
+        id: string;
+        channelId: string;
+        senderId: string;
+        ciphertext: string;
+        nonce: string;
+        createdAt: number;
+        editedAt?: number | null;
+        pinnedAt: number;
+      }[];
+    }>(`/api/channels/${channelId}/pins`),
 
   // ── DMs ───────────────────────────────────────────────────────────────────
   listDms: () => request<{ dms: DmChannelPayload[] }>('/api/dms'),
@@ -802,6 +818,41 @@ export const api = {
    *  Server refuses with 409 if the file is already referenced — safe to fire-and-forget. */
   deleteUpload: (url: string): Promise<void> =>
     request<void>(`/api/upload/file?url=${encodeURIComponent(url)}`, { method: 'DELETE' }),
+
+  // ── Membership tiers ─────────────────────────────────────────────────────
+  tiers: {
+    list: (serverId: string) =>
+      request<{ tiers: import('../types').TierLevel[] }>(`/api/servers/${serverId}/tiers`),
+
+    create: (serverId: string, body: { name: string; description?: string; priceCents: number; position?: number }) =>
+      request<{ tier: import('../types').TierLevel }>(`/api/servers/${serverId}/tiers`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+
+    update: (serverId: string, tierId: string, body: { name?: string; description?: string; priceCents?: number; position?: number }) =>
+      request<{ tier: import('../types').TierLevel }>(`/api/servers/${serverId}/tiers/${tierId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+
+    delete: (serverId: string, tierId: string) =>
+      request<{ ok: boolean }>(`/api/servers/${serverId}/tiers/${tierId}`, { method: 'DELETE' }),
+
+    setChannelTier: (serverId: string, channelId: string, tierId: string | null) =>
+      request<{ ok: boolean }>(`/api/servers/${serverId}/channels/${channelId}/tier`, {
+        method: 'PATCH',
+        body: JSON.stringify({ tierId }),
+      }),
+
+    myTier: (serverId: string) =>
+      request<{ tierId: string | null; tierName: string | null; status: string | null }>(
+        `/api/servers/${serverId}/my-tier`,
+      ),
+
+    subscribe: (serverId: string, tierId: string) =>
+      request<{ url: string }>(`/api/servers/${serverId}/tiers/${tierId}/subscribe`, { method: 'POST' }),
+  },
 
   invites: {
     /** Public — no auth needed. Returns server name + invite metadata. */

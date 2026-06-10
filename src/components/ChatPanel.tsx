@@ -3,7 +3,7 @@ import { MessageRow } from './MessageRow';
 import { ReportDialog } from './ReportDialog';
 import { Composer, type AnimationType, type ReplyingTo } from './Composer';
 import { TypingIndicator } from './TypingIndicator';
-import type { Channel, DecodedMessage, FileAttachment, Member, User } from '../types';
+import type { Channel, DecodedMessage, FileAttachment, Member, PinnedMessage, User } from '../types';
 
 
 type Props = {
@@ -32,6 +32,13 @@ type Props = {
   onClickUser?: (userId: string) => void;
   /** Optional node rendered in the channel header (e.g. BroadcastButton) */
   headerActions?: ReactNode;
+  /** List of pinned messages for this channel (decrypted). */
+  pinnedMessages?: PinnedMessage[];
+  /** Called when a message should be pinned or unpinned. */
+  onPin?: (messageId: string) => void;
+  onUnpin?: (messageId: string) => void;
+  /** Whether the current user has permission to pin/unpin messages. */
+  canPin?: boolean;
 };
 
 export function ChatPanel({
@@ -56,10 +63,15 @@ export function ChatPanel({
   onClickUser,
   headerActions,
   sparksBalance,
+  pinnedMessages,
+  onPin,
+  onUnpin,
+  canPin,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [reportTarget, setReportTarget] = useState<{ msgId: string; senderId: string } | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [showPins, setShowPins] = useState(false);
   const loadingMoreRef = useRef(false);
   const prevScrollHeightRef = useRef(0);
   const [replyingTo, setReplyingTo] = useState<ReplyingTo | null>(null);
@@ -182,6 +194,30 @@ export function ChatPanel({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {/* Pinned messages button */}
+          {(pinnedMessages !== undefined) && (
+            <button
+              onClick={() => setShowPins((p) => !p)}
+              title="Pinned messages"
+              aria-label="Pinned messages"
+              className={`relative h-8 flex items-center gap-1.5 px-2.5 rounded-lg border transition-colors text-[12px] font-medium ${
+                showPins
+                  ? 'bg-amber-500/20 border-amber-500/30 text-amber-300'
+                  : 'bg-ink-800/60 border-white/[0.06] text-ink-300 hover:bg-ink-700/60 hover:text-ink-100'
+              }`}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill={showPins ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="17" x2="12" y2="22" />
+                <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
+              </svg>
+              <span className="hidden sm:inline">Pins</span>
+              {(pinnedMessages.length > 0) && (
+                <span className="inline-flex items-center justify-center h-4 min-w-[16px] px-1 rounded-full bg-amber-500/30 text-amber-200 text-[10px] font-bold tabular-nums">
+                  {pinnedMessages.length}
+                </span>
+              )}
+            </button>
+          )}
           {/* Extra header actions (e.g. BroadcastButton) */}
           {headerActions}
           {encrypted ? (
@@ -216,6 +252,69 @@ export function ChatPanel({
         </div>
       </header>
 
+      {/* Pinned messages drawer */}
+      {showPins && pinnedMessages !== undefined && (
+        <div className="shrink-0 border-b border-white/5 bg-ink-900/80 max-h-72 overflow-y-auto">
+          <div className="px-4 py-2.5 flex items-center justify-between sticky top-0 bg-ink-900/95 backdrop-blur border-b border-white/[0.04] z-10">
+            <div className="flex items-center gap-2">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400">
+                <line x1="12" y1="17" x2="12" y2="22" />
+                <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
+              </svg>
+              <span className="text-[12px] font-semibold text-ink-200">
+                {pinnedMessages.length === 0
+                  ? 'No pinned messages'
+                  : `${pinnedMessages.length} pinned message${pinnedMessages.length === 1 ? '' : 's'}`}
+              </span>
+            </div>
+            <button
+              onClick={() => setShowPins(false)}
+              className="h-6 w-6 grid place-items-center rounded-md text-ink-400 hover:text-ink-200 hover:bg-white/[0.06] transition-colors"
+              aria-label="Close pins"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+          {pinnedMessages.length === 0 ? (
+            <p className="px-4 py-5 text-[12px] text-ink-400 text-center">
+              No messages are pinned in this channel yet.
+            </p>
+          ) : (
+            <ul className="divide-y divide-white/[0.04]">
+              {pinnedMessages.map((pin) => (
+                <li key={pin.id} className="flex items-start gap-3 px-4 py-2.5 hover:bg-white/[0.02] transition-colors">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline gap-2 mb-0.5">
+                      <span className="text-[12px] font-semibold text-ink-200 truncate">
+                        {pin.senderName ?? 'Unknown'}
+                      </span>
+                      <span className="text-[10px] text-ink-400 shrink-0">
+                        {new Date(pin.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                      </span>
+                    </div>
+                    <p className="text-[12px] text-ink-300 leading-snug break-words">
+                      {pin.body.length > 100 ? pin.body.slice(0, 100) + '…' : pin.body}
+                    </p>
+                  </div>
+                  {canPin && onUnpin && (
+                    <button
+                      onClick={() => onUnpin(pin.id)}
+                      title="Unpin message"
+                      className="shrink-0 h-6 px-2 rounded-md text-[11px] font-medium text-ink-400 hover:text-amber-300 hover:bg-amber-500/10 border border-transparent hover:border-amber-500/20 transition-colors"
+                    >
+                      Unpin
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto py-4">
         {hasMore && (
           <div className="flex justify-center pb-2 pt-1">
@@ -231,34 +330,41 @@ export function ChatPanel({
         {messages.length === 0 ? (
           <EmptyState channelName={channel.name} encrypted={encrypted} />
         ) : (
-          grouped.map(({ msg, showHeader }) => (
-            <MessageRow
-              key={msg.id}
-              msg={msg}
-              sender={members[msg.senderId]}
-              showHeader={showHeader}
-              isSelf={msg.senderId === me.id}
-              meId={me.id}
-              members={members}
-              sparksBalance={sparksBalance}
-              onDelete={msg.senderId === me.id ? () => onDelete(msg.id) : undefined}
-              onEdit={msg.senderId === me.id ? (newText) => onEdit(msg.id, newText) : undefined}
-              onReaction={encrypted ? (emoji) => onReaction(msg.id, emoji) : undefined}
-              onSpark={onSpark && encrypted && msg.senderId !== me.id ? (msgId, amount) => onSpark(msgId, amount) : undefined}
-              onReport={onReport && msg.senderId !== me.id
-                ? () => setReportTarget({ msgId: msg.id, senderId: msg.senderId })
-                : undefined}
-              onReply={encrypted ? (m) => {
-                const senderName = members[m.senderId]?.displayName ?? members[m.senderId]?.username ?? 'unknown';
-                setReplyingTo({
-                  id: m.id,
-                  senderName,
-                  bodyPreview: m.failed ? '[encrypted]' : m.body,
-                });
-              } : undefined}
-              onClickUser={onClickUser}
-            />
-          ))
+          grouped.map(({ msg, showHeader }) => {
+            const isPinned = pinnedMessages?.some((p) => p.id === msg.id) ?? false;
+            return (
+              <MessageRow
+                key={msg.id}
+                msg={msg}
+                sender={members[msg.senderId]}
+                showHeader={showHeader}
+                isSelf={msg.senderId === me.id}
+                meId={me.id}
+                members={members}
+                sparksBalance={sparksBalance}
+                onDelete={msg.senderId === me.id ? () => onDelete(msg.id) : undefined}
+                onEdit={msg.senderId === me.id ? (newText) => onEdit(msg.id, newText) : undefined}
+                onReaction={encrypted ? (emoji) => onReaction(msg.id, emoji) : undefined}
+                onSpark={onSpark && encrypted && msg.senderId !== me.id ? (msgId, amount) => onSpark(msgId, amount) : undefined}
+                onReport={onReport && msg.senderId !== me.id
+                  ? () => setReportTarget({ msgId: msg.id, senderId: msg.senderId })
+                  : undefined}
+                onReply={encrypted ? (m) => {
+                  const senderName = members[m.senderId]?.displayName ?? members[m.senderId]?.username ?? 'unknown';
+                  setReplyingTo({
+                    id: m.id,
+                    senderName,
+                    bodyPreview: m.failed ? '[encrypted]' : m.body,
+                  });
+                } : undefined}
+                onClickUser={onClickUser}
+                onPin={canPin && encrypted
+                  ? () => (isPinned ? onUnpin?.(msg.id) : onPin?.(msg.id))
+                  : undefined}
+                isPinned={isPinned}
+              />
+            );
+          })
         )}
       </div>
 

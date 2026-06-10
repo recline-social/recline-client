@@ -90,6 +90,7 @@ import type {
   DmWireMessage,
   Friend,
   Member,
+  PinnedMessage,
   ServerRole,
   ServerSummary,
   User,
@@ -262,6 +263,15 @@ export default function App() {
   // unread counts per channel
   const [unread, setUnread] = useState<Record<string, number>>({});
 
+  // pinned messages per channel (decrypted)
+  const [pinnedMsgs, setPinnedMsgs] = useState<Record<string, PinnedMessage[]>>({});
+  const pinnedMsgsLoadedRef = useRef<Set<string>>(new Set());
+  // bumped when a pin/unpin event invalidates a channel's pin cache
+  const [pinsVersion, setPinsVersion] = useState(0);
+
+  // tier-required upgrade prompt — set when a send is rejected with 'tier_required'
+  const [tierRequiredChannelId, setTierRequiredChannelId] = useState<string | null>(null);
+
   // encryption key readiness per server
   const [keysReady, setKeysReady] = useState<Record<string, boolean>>({});
   const [unlockTarget, setUnlockTarget] = useState<string | null>(null);
@@ -362,6 +372,10 @@ export default function App() {
   // FEAT-040: notification mutes (scope id sets)
   const [mutedServers, setMutedServers] = useState<Set<string>>(new Set());
   const [mutedChannelIds, setMutedChannelIds] = useState<Set<string>>(new Set());
+  const mutedServersRef = useRef<Set<string>>(new Set());
+  const mutedChannelIdsRef = useRef<Set<string>>(new Set());
+  mutedServersRef.current = mutedServers;
+  mutedChannelIdsRef.current = mutedChannelIds;
   // FEAT-020: message search modal
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -743,8 +757,12 @@ export default function App() {
       // this channel (or when the window is not in focus).
       const isFocused =
         activeChannelIdRef.current === msg.channelId && document.visibilityState === 'visible';
+      const ch = lookupChannel(msg.channelId);
+      const isMuted = ch && (mutedServersRef.current.has(ch.server_id) || mutedChannelIdsRef.current.has(msg.channelId));
       if (!isFocused && msg.senderId !== userRef.current?.id) {
-        setUnread((prev) => ({ ...prev, [msg.channelId]: (prev[msg.channelId] ?? 0) + 1 }));
+        if (!isMuted) {
+          setUnread((prev) => ({ ...prev, [msg.channelId]: (prev[msg.channelId] ?? 0) + 1 }));
+        }
       } else if (isFocused) {
         // Viewing the channel as the message lands — advance the server cursor
         // so this message isn't counted as unread after a reload.
@@ -754,7 +772,7 @@ export default function App() {
       // Desktop notification when tab is hidden and message is from someone else.
       // Also fires for mentions even when the tab is not the active channel (but
       // still hidden), using shouldNotify() as the final gate.
-      if (msg.senderId !== userRef.current?.id && shouldNotify()) {
+      if (!isMuted && msg.senderId !== userRef.current?.id && shouldNotify()) {
         const senderName = (() => {
           for (const members of Object.values(membersByServerRef.current)) {
             const m = members.find((m) => m.id === msg.senderId);
@@ -763,7 +781,11 @@ export default function App() {
           return 'Someone';
         })();
         const channelName = lookupChannel(msg.channelId)?.name ?? 'unknown';
-        const isMention = !failed && body.includes(`@${userRef.current?.displayName}`);
+        const displayName = userRef.current?.displayName ?? '';
+        const isMention = !failed && displayName !== '' && (
+          body.includes(`@${displayName}`) ||
+          body.includes(`@[${displayName}]`)
+        );
 
         if (!isFocused || isMention) {
           showNotification(
@@ -1197,7 +1219,8 @@ export default function App() {
     };
 
     // friendship:incoming — server sends the requester's user ID as `id`
-    const onFriendshipIncoming = (data: { id: string; displayName: string; avatarUrl?: string | null }) => {
+    // TODO: ask server to also send `username` in this event so we can populate it correctly.
+    const onFriendshipIncoming = (data: { id: string; username?: string; displayName: string; avatarUrl?: string | null }) => {
       setFriends(prev => {
         // data.id is the requester's userId — deduplicate by userId
         if (prev.some(f => f.userId === data.id)) return prev;
@@ -1206,7 +1229,7 @@ export default function App() {
           status: 'pending' as const,
           direction: 'incoming' as const,
           userId: data.id,
-          username: data.displayName, // username not sent; use displayName as fallback
+          username: data.username ?? data.displayName, // prefer real username, fall back to displayName
           displayName: data.displayName,
           avatarUrl: data.avatarUrl ?? null,
         }];
@@ -1271,14 +1294,14 @@ export default function App() {
     s.on('dm:reaction:update', onDmReactionUpdate);
 
     // ── DM message edited ──────────────────────────────────────────────────
-    const onDmMessageEdited = async (data: { id: string; dmChannelId: string; ciphertext: string; nonce: string; editedAt: number }) => {
+    const onDmMessageEdited = async (data: { id: string; dmChannelId: string; ciphertext: string; nonce: string; editedAt: number; senderEcdhPublicKey?: string | null }) => {
       // Find the DM channel for key lookup
       const dmChannel = dmsRef.current.find((d) => d.id === data.dmChannelId);
       let newBody = '[could not decrypt]';
       let failed = true;
       if (dmChannel && data.ciphertext && data.nonce) {
         try {
-          const r = await tryDecryptDm(data.ciphertext, data.nonce, dmChannel, null);
+          const r = await tryDecryptDm(data.ciphertext, data.nonce, dmChannel, data.senderEcdhPublicKey ?? null);
           newBody = r.body;
           failed = false;
         } catch { /* keep defaults */ }
@@ -1439,6 +1462,50 @@ export default function App() {
       });
     };
 
+    // message:pinned — mark message pinned + invalidate pin cache for that channel
+    const onMessagePinned = (data: { messageId: string; channelId: string; pinnedAt: number }) => {
+      setChannelMsgs((prev) => {
+        const state = prev[data.channelId];
+        if (!state) return prev;
+        return {
+          ...prev,
+          [data.channelId]: {
+            ...state,
+            messages: state.messages.map((m) =>
+              m.id === data.messageId ? { ...m, pinnedAt: data.pinnedAt } : m,
+            ),
+          },
+        };
+      });
+      // Invalidate pin cache so the pins panel refetches on next open (or immediately
+      // if already open). We intentionally don't append to pinnedMsgs here because we
+      // don't have the decoded message text available in this handler — the cache
+      // invalidation + setPinsVersion triggers the useEffect refetch which is correct.
+      pinnedMsgsLoadedRef.current.delete(data.channelId);
+      setPinsVersion((v) => v + 1);
+    };
+
+    // message:unpinned — remove from pin list and clear pinnedAt
+    const onMessageUnpinned = (data: { messageId: string; channelId: string }) => {
+      setPinnedMsgs((prev) => {
+        const existing = prev[data.channelId] ?? [];
+        return { ...prev, [data.channelId]: existing.filter((m) => m.id !== data.messageId) };
+      });
+      setChannelMsgs((prev) => {
+        const state = prev[data.channelId];
+        if (!state) return prev;
+        return {
+          ...prev,
+          [data.channelId]: {
+            ...state,
+            messages: state.messages.map((m) =>
+              m.id === data.messageId ? { ...m, pinnedAt: null } : m,
+            ),
+          },
+        };
+      });
+    };
+
     // server:broadcast — enqueue for sequential display via BroadcastOverlay
     const onServerBroadcast = (payload: BroadcastPayload) => {
       // Only show if we are currently viewing this server
@@ -1454,6 +1521,8 @@ export default function App() {
     s.on('sparks:update', onSparksUpdate);
     s.on('server:broadcast', onServerBroadcast);
     s.on('message:sparked', onMessageSparked);
+    s.on('message:pinned', onMessagePinned);
+    s.on('message:unpinned', onMessageUnpinned);
 
     callManagerRef.current = new CallManager(s, {
       onPeers: (peers) => {
@@ -1520,6 +1589,8 @@ export default function App() {
       s.off('sparks:update', onSparksUpdate);
       s.off('server:broadcast', onServerBroadcast);
       s.off('message:sparked', onMessageSparked);
+      s.off('message:pinned', onMessagePinned);
+      s.off('message:unpinned', onMessageUnpinned);
       callManagerRef.current?.destroy();
       callManagerRef.current = null;
       disconnectSocket();
@@ -1622,7 +1693,8 @@ export default function App() {
     if (!activeServerId) return;
     if (!channelsByServer[activeServerId]) {
       api.listChannels(activeServerId).then((r) => {
-        setChannelsByServer((prev) => ({ ...prev, [activeServerId]: r.channels }));
+        const mapped = r.channels.map(ch => ({ ...ch, tierRequired: ch.tier_required ?? null }));
+        setChannelsByServer((prev) => ({ ...prev, [activeServerId]: mapped }));
         setActiveChannelId(null);
       }).catch((err) => console.error('[channels] Failed to load:', err));
     } else {
@@ -1716,6 +1788,30 @@ export default function App() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeChannelId, activeServerId, keysReady]);
+
+  /* ------------------------ Pinned messages loader ------------------------ */
+  useEffect(() => {
+    if (!activeServerId || !activeChannelId) return;
+    const ch = (channelsByServer[activeServerId] ?? []).find((c) => c.id === activeChannelId);
+    if (!ch || ch.type !== 'text') return;
+    if (pinnedMsgsLoadedRef.current.has(activeChannelId)) return;
+    const key = getCachedKey(activeServerId);
+    if (!key) return;
+    let cancelled = false;
+    pinnedMsgsLoadedRef.current.add(activeChannelId);
+    api.getPinnedMessages(activeChannelId).then(async (r) => {
+      const decoded: PinnedMessage[] = [];
+      for (const p of r.pins) {
+        let body = '[could not decrypt]';
+        try { body = await decryptText(key, p.ciphertext, p.nonce); } catch {}
+        decoded.push({ id: p.id, channelId: p.channelId, senderId: p.senderId, body, createdAt: p.createdAt, pinnedAt: p.pinnedAt });
+      }
+      if (cancelled) return;
+      setPinnedMsgs((prev) => ({ ...prev, [activeChannelId]: decoded }));
+    }).catch(() => { pinnedMsgsLoadedRef.current.delete(activeChannelId); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeChannelId, activeServerId, pinsVersion, keysReady]);
 
   /* ------------------------ DM message loader ------------------------ */
   useEffect(() => {
@@ -1907,8 +2003,16 @@ export default function App() {
         },
         (resp: { ok: boolean; id?: string; error?: string }) => {
           clearTimeout(timer);
-          if (!resp?.ok) reject(new Error(resp?.error ?? 'send failed'));
-          else resolve();
+          if (!resp?.ok) {
+            if (resp?.error === 'tier_required') {
+              setTierRequiredChannelId(channelId);
+              resolve(); // don't leave input in error state
+            } else {
+              reject(new Error(resp?.error ?? 'send failed'));
+            }
+          } else {
+            resolve();
+          }
         },
       );
     });
@@ -1950,8 +2054,11 @@ export default function App() {
     const { ciphertext, nonce } = await encryptText(key, newText);
     // Use ack so the client knows if the edit was rejected (rate limit, kicked, etc.)
     // Throw on failure so MessageRow can keep the edit box open with the text. (#L-13)
+    let editTimer: ReturnType<typeof setTimeout> | null = null;
     await new Promise<void>((resolve, reject) => {
+      editTimer = setTimeout(() => reject(new Error('edit timed out — try again')), 8000);
       socket.emit('message:edit', { id, ciphertext, nonce }, (resp: { ok: boolean; error?: string } | undefined) => {
+        if (editTimer) clearTimeout(editTimer);
         if (resp?.ok === false) reject(new Error(resp?.error ?? 'Edit failed'));
         else resolve();
       });
@@ -1960,6 +2067,14 @@ export default function App() {
 
   function handleReaction(messageId: string, emoji: string) {
     socketRef.current?.emit('reaction:toggle', { messageId, emoji });
+  }
+
+  function handlePinMessage(messageId: string) {
+    socketRef.current?.emit('message:pin', { messageId });
+  }
+
+  function handleUnpinMessage(messageId: string) {
+    socketRef.current?.emit('message:unpin', { messageId });
   }
 
   function handleSparkMessage(messageId: string, amount: number): Promise<void> {
@@ -2310,7 +2425,8 @@ export default function App() {
   }
 
   async function startDmCall(dmId: string, hasVideo: boolean) {
-    if (dmCallRef.current) return; // already in a call
+    if (dmCallRef.current) return; // already in a DM call
+    if (inCall) { console.warn('[DM call] Cannot start DM call while in a voice channel'); return; }
     const dm = dms.find((d) => d.id === dmId);
     if (!dm) return;
     let localStream: MediaStream | null = null;
@@ -2613,7 +2729,7 @@ export default function App() {
       const r = await api.createChannel(activeServerId, { name, type });
       setChannelsByServer((prev) => ({
         ...prev,
-        [activeServerId]: [...(prev[activeServerId] ?? []), r.channel],
+        [activeServerId]: [...(prev[activeServerId] ?? []), { ...r.channel, tierRequired: r.channel.tier_required ?? null }],
       }));
     } finally {
       creatingChannelRef.current = false;
@@ -2928,6 +3044,17 @@ export default function App() {
   const activeMsgs = activeChannelId ? channelMsgs[activeChannelId]?.messages ?? [] : [];
   const canManage = activeServer?.role === 'owner';
 
+  const canPin = (() => {
+    if (!activeServer || !user) return false;
+    if (activeServer.role === 'owner') return true;
+    const myMember = members.find((m) => m.id === user.id);
+    if (!myMember?.roles?.length) return false;
+    const serverRoles = activeServerId ? (rolesByServer[activeServerId] ?? []) : [];
+    const myRolePerms = myMember.roles
+      .map((mr) => serverRoles.find((sr) => sr.id === mr.id)?.permissions ?? 0);
+    return hasPermission(computeEffectivePerms(myRolePerms), Permissions.MANAGE_MESSAGES);
+  })();
+
   // Whether the current user can assign/remove roles in the active server
   const canManageRoles = (() => {
     if (!activeServer || !user) return false;
@@ -3223,6 +3350,10 @@ export default function App() {
                   onOpenMembers={() => setMobileMembersOpen(true)}
                   onClickUser={setProfileCardUserId}
                   sparksBalance={sparksBalance}
+                  pinnedMessages={activeChannelId ? (pinnedMsgs[activeChannelId] ?? []) : []}
+                  canPin={canPin}
+                  onPin={handlePinMessage}
+                  onUnpin={handleUnpinMessage}
                   headerActions={activeServerId ? (
                     <BroadcastButton
                       serverId={activeServerId}
@@ -3429,6 +3560,27 @@ export default function App() {
       />
       {showSupporterToast && (
         <SupporterToast onDismiss={() => setShowSupporterToast(false)} />
+      )}
+      {tierRequiredChannelId && (
+        <div
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-2xl px-4 py-3 max-w-sm w-full"
+          style={{
+            background: 'linear-gradient(135deg, rgba(13,13,22,0.98) 0%, rgba(22,14,40,0.98) 100%)',
+            border: '1px solid rgba(139,92,246,0.38)',
+            boxShadow: '0 24px 64px rgba(0,0,0,0.7)',
+          }}
+        >
+          <div className="text-violet-400 text-lg shrink-0">🔒</div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-white/90">Subscription required</div>
+            <div className="text-xs text-white/50 mt-0.5">This channel is for subscribers only. Upgrade your tier to post.</div>
+          </div>
+          <button
+            onClick={() => setTierRequiredChannelId(null)}
+            className="text-white/30 hover:text-white/60 transition-colors shrink-0 text-xl leading-none"
+            aria-label="Dismiss"
+          >×</button>
+        </div>
       )}
       {streakToast && (
         <SparkStreakToast

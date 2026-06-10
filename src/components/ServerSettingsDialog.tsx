@@ -5,7 +5,7 @@ import { getServerUrl } from '../lib/serverUrl';
 import { Permissions } from '../lib/permissions';
 import { Avatar } from './Avatar';
 
-type Tab = 'general' | 'security' | 'members' | 'roles' | 'bans' | 'reports' | 'invites' | 'danger';
+type Tab = 'general' | 'security' | 'members' | 'roles' | 'tiers' | 'bans' | 'reports' | 'invites' | 'danger';
 
 type Report = {
   id: string;
@@ -325,6 +325,7 @@ export function ServerSettingsDialog({
         { id: 'security', label: 'Security' },
         { id: 'members', label: 'People' },
         { id: 'roles', label: 'Roles' },
+        { id: 'tiers', label: 'Tiers' },
         { id: 'bans', label: 'Bans' },
         { id: 'reports', label: 'Reports' },
         { id: 'invites', label: 'Invites' },
@@ -710,6 +711,11 @@ export function ServerSettingsDialog({
               roles={roles}
               onRolesChange={onRolesChange ?? (() => {})}
             />
+          )}
+
+          {/* ── Tiers ────────────────────────────────────────────── */}
+          {tab === 'tiers' && isOwner && (
+            <TiersTab serverId={server.id} />
           )}
 
           {/* ── Bans ─────────────────────────────────────────────── */}
@@ -1375,6 +1381,398 @@ function RolesTab({
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ── Tiers Tab ─────────────────────────────────────────────────────────────────
+function TiersTab({ serverId }: { serverId: string }) {
+  const [tiers, setTiers] = useState<import('../types').TierLevel[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  // Add form
+  const [adding, setAdding] = useState(false);
+  const [addName, setAddName] = useState('');
+  const [addDesc, setAddDesc] = useState('');
+  const [addPrice, setAddPrice] = useState('');
+  const [addPosition, setAddPosition] = useState('');
+  const [addErr, setAddErr] = useState('');
+
+  // Edit state: tier id → partial edit
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const [editPrice, setEditPrice] = useState('');
+  const [editPosition, setEditPosition] = useState('');
+
+  // Delete confirm
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!deleteConfirmId) return;
+    const t = setTimeout(() => setDeleteConfirmId(null), 3000);
+    return () => clearTimeout(t);
+  }, [deleteConfirmId]);
+
+  useEffect(() => {
+    setLoading(true);
+    api.tiers.list(serverId)
+      .then((r) => setTiers(r.tiers))
+      .catch((e: Error) => setErr(e.message))
+      .finally(() => setLoading(false));
+  }, [serverId]);
+
+  function openEdit(tier: import('../types').TierLevel) {
+    setEditId(tier.id);
+    setEditName(tier.name);
+    setEditDesc(tier.description ?? '');
+    setEditPrice(String(tier.priceCents / 100));
+    setEditPosition(String(tier.position));
+    setErr('');
+  }
+
+  function closeEdit() {
+    setEditId(null);
+    setErr('');
+  }
+
+  async function handleAdd(e: React.FormEvent) {
+    e.preventDefault();
+    setAddErr('');
+    const name = addName.trim();
+    if (!name) { setAddErr('Name is required'); return; }
+    const price = parseFloat(addPrice);
+    if (isNaN(price) || price < 0) { setAddErr('Enter a valid price in $'); return; }
+    const priceCents = Math.round(price * 100);
+    const position = addPosition ? parseInt(addPosition, 10) : undefined;
+    if (position !== undefined && isNaN(position)) { setAddErr('Position must be a number'); return; }
+    setBusy(true);
+    try {
+      const { tier } = await api.tiers.create(serverId, {
+        name,
+        description: addDesc.trim() || undefined,
+        priceCents,
+        position,
+      });
+      setTiers((prev) => [...prev, tier].sort((a, b) => a.position - b.position));
+      setAddName(''); setAddDesc(''); setAddPrice(''); setAddPosition('');
+      setAdding(false);
+    } catch (ex: unknown) {
+      setAddErr(ex instanceof Error ? ex.message : 'Failed to create tier');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSaveEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editId) return;
+    setErr('');
+    const name = editName.trim();
+    if (!name) { setErr('Name is required'); return; }
+    const price = parseFloat(editPrice);
+    if (isNaN(price) || price < 0) { setErr('Enter a valid price in $'); return; }
+    const priceCents = Math.round(price * 100);
+    const position = editPosition ? parseInt(editPosition, 10) : undefined;
+    if (position !== undefined && isNaN(position)) { setErr('Position must be a number'); return; }
+    setBusy(true);
+    try {
+      const { tier } = await api.tiers.update(serverId, editId, {
+        name,
+        description: editDesc.trim() || undefined,
+        priceCents,
+        position,
+      });
+      setTiers((prev) =>
+        prev.map((t) => t.id === editId ? { ...t, ...tier } : t)
+            .sort((a, b) => a.position - b.position),
+      );
+      closeEdit();
+    } catch (ex: unknown) {
+      setErr(ex instanceof Error ? ex.message : 'Failed to save tier');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete(tierId: string) {
+    if (deleteConfirmId !== tierId) {
+      setDeleteConfirmId(tierId);
+      return;
+    }
+    setDeleteConfirmId(null);
+    setBusy(true);
+    setErr('');
+    try {
+      await api.tiers.delete(serverId, tierId);
+      setTiers((prev) => prev.filter((t) => t.id !== tierId));
+      if (editId === tierId) closeEdit();
+    } catch (ex: unknown) {
+      setErr(ex instanceof Error ? ex.message : 'Failed to delete tier');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const sorted = [...tiers].sort((a, b) => a.position - b.position);
+
+  if (editId) {
+    const tier = tiers.find((t) => t.id === editId);
+    if (!tier) return null;
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={closeEdit}
+            className="btn-ghost text-[12px] px-2 py-1 flex items-center gap-1"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+            Back
+          </button>
+          <span className="text-[13px] font-semibold text-ink-100">Edit tier</span>
+        </div>
+
+        {err && (
+          <div className="text-[12px] text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
+            {err}
+          </div>
+        )}
+
+        <form onSubmit={handleSaveEdit} className="space-y-3">
+          <div className="space-y-1.5">
+            <label className="block text-[11px] uppercase tracking-widest text-ink-300 font-semibold">Name</label>
+            <input
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              maxLength={64}
+              className="input w-full text-sm"
+              disabled={busy}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-[11px] uppercase tracking-widest text-ink-300 font-semibold">
+              Description <span className="text-ink-500 normal-case font-normal">(optional)</span>
+            </label>
+            <input
+              value={editDesc}
+              onChange={(e) => setEditDesc(e.target.value)}
+              maxLength={256}
+              placeholder="What does this tier include?"
+              className="input w-full text-sm"
+              disabled={busy}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="block text-[11px] uppercase tracking-widest text-ink-300 font-semibold">Price ($)</label>
+              <input
+                type="number"
+                value={editPrice}
+                onChange={(e) => setEditPrice(e.target.value)}
+                min={0}
+                step={0.01}
+                placeholder="e.g. 4.99"
+                className="input w-full text-sm"
+                disabled={busy}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="block text-[11px] uppercase tracking-widest text-ink-300 font-semibold">Position</label>
+              <input
+                type="number"
+                value={editPosition}
+                onChange={(e) => setEditPosition(e.target.value)}
+                min={0}
+                placeholder="0"
+                className="input w-full text-sm"
+                disabled={busy}
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <button
+              type="submit"
+              disabled={busy}
+              className="btn-primary text-sm px-4 py-2 flex-1 disabled:opacity-40"
+            >
+              {busy ? 'Saving…' : 'Save changes'}
+            </button>
+            {deleteConfirmId === tier.id ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleDelete(tier.id)}
+                  disabled={busy}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-rose-500/25 text-rose-300 hover:bg-rose-500/35 border border-rose-500/40 transition-colors disabled:opacity-40"
+                >
+                  Delete
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDeleteConfirmId(null)}
+                  disabled={busy}
+                  className="btn-ghost text-sm px-4 py-2 disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => handleDelete(tier.id)}
+                disabled={busy}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-rose-500/15 text-rose-400 hover:bg-rose-500/25 border border-rose-500/20 transition-colors disabled:opacity-40"
+              >
+                Delete
+              </button>
+            )}
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="text-[12px] text-ink-300">
+          Membership tiers — set which tier a channel requires in channel settings.
+        </div>
+        <button
+          onClick={() => { setAdding((v) => !v); setAddErr(''); }}
+          className="btn-ghost text-[12px] px-3 py-1.5"
+        >
+          {adding ? 'Cancel' : '+ Add tier'}
+        </button>
+      </div>
+
+      {err && (
+        <div className="text-[12px] text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
+          {err}
+        </div>
+      )}
+
+      {adding && (
+        <form
+          onSubmit={handleAdd}
+          className="bg-ink-800/60 border border-white/[0.06] rounded-xl px-4 py-4 space-y-3"
+        >
+          <div className="text-[12px] font-semibold text-ink-100">New tier</div>
+          {addErr && (
+            <div className="text-[12px] text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
+              {addErr}
+            </div>
+          )}
+          <div className="space-y-1.5">
+            <label className="block text-[10px] uppercase tracking-widest text-ink-400 font-semibold">Name</label>
+            <input
+              value={addName}
+              onChange={(e) => setAddName(e.target.value)}
+              maxLength={64}
+              placeholder="e.g. Supporter"
+              className="input w-full text-sm"
+              disabled={busy}
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-[10px] uppercase tracking-widest text-ink-400 font-semibold">
+              Description <span className="text-ink-500 normal-case font-normal">(optional)</span>
+            </label>
+            <input
+              value={addDesc}
+              onChange={(e) => setAddDesc(e.target.value)}
+              maxLength={256}
+              placeholder="What does this tier include?"
+              className="input w-full text-sm"
+              disabled={busy}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="block text-[10px] uppercase tracking-widest text-ink-400 font-semibold">Price ($)</label>
+              <input
+                type="number"
+                value={addPrice}
+                onChange={(e) => setAddPrice(e.target.value)}
+                min={0}
+                step={0.01}
+                placeholder="e.g. 4.99"
+                className="input w-full text-sm"
+                disabled={busy}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="block text-[10px] uppercase tracking-widest text-ink-400 font-semibold">
+                Position <span className="text-ink-500 normal-case font-normal">(optional)</span>
+              </label>
+              <input
+                type="number"
+                value={addPosition}
+                onChange={(e) => setAddPosition(e.target.value)}
+                min={0}
+                placeholder="0"
+                className="input w-full text-sm"
+                disabled={busy}
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => { setAdding(false); setAddErr(''); }}
+              className="btn-ghost text-sm px-4 py-2 flex-1"
+              disabled={busy}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={busy || !addName.trim()}
+              className="btn-primary text-sm px-4 py-2 flex-1 disabled:opacity-40"
+            >
+              {busy ? 'Creating…' : 'Create tier'}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {loading ? (
+        <div className="text-center py-8 text-ink-400 text-[12px]">Loading tiers…</div>
+      ) : sorted.length === 0 ? (
+        <div className="text-center py-8 text-ink-400 text-[12px]">No tiers yet. Add one above.</div>
+      ) : (
+        <div className="space-y-1">
+          {sorted.map((tier) => (
+            <button
+              key={tier.id}
+              onClick={() => openEdit(tier)}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/[0.04] transition-colors text-left group"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="text-[13px] font-medium text-ink-100 truncate">{tier.name}</div>
+                {tier.description && (
+                  <div className="text-[11px] text-ink-400 truncate">{tier.description}</div>
+                )}
+              </div>
+              <div className="text-[12px] text-ink-300 shrink-0">
+                ${(tier.priceCents / 100).toFixed(2)}/mo
+              </div>
+              <div className="text-[10px] text-ink-500 shrink-0">pos {tier.position}</div>
+              <svg
+                width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                className="text-ink-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+              >
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

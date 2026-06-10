@@ -475,7 +475,10 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
         }
 
         // Priority 2: force-register local key with password + upload fresh backup.
-        await api.registerPublicKey(localJwk, password).catch(() => {});
+        await api.registerPublicKey(localJwk, password).catch((err) => {
+          console.error('[DM keys] Failed to re-register local key:', err);
+          throw err;
+        });
         dmKeyPairRef.current = pair;
         setDmKeyMismatch(false);
         setDmKeysReady(true);

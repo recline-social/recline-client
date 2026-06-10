@@ -98,6 +98,19 @@ export type Channel = {
   type: 'text' | 'voice';
   position: number;
   topic?: string | null;
+  /** Tier ID required to access this channel, or null for unrestricted. */
+  tierRequired?: string | null;
+};
+
+export type TierLevel = {
+  id: string;
+  serverId: string;
+  name: string;
+  description?: string | null;
+  priceCents: number;
+  stripePriceId?: string | null;
+  position: number;
+  createdAt: number;
 };
 
 export type Reaction = {
@@ -143,6 +156,18 @@ export type WireMessage = {
   fileName?: string | null;
   fileSize?: number | null;
   fileType?: string | null;
+  /** Unix ms when this message was pinned. Null/undefined = not pinned. */
+  pinnedAt?: number | null;
+};
+
+export type PinnedMessage = {
+  id: string;
+  channelId: string;
+  senderId: string;
+  body: string; // decrypted
+  createdAt: number;
+  pinnedAt: number;
+  senderName?: string;
 };
 
 export type DecodedMessage = WireMessage & {

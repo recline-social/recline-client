@@ -234,6 +234,7 @@ export function ChannelList(props: Props) {
                 setConfirmDeleteId={setConfirmDeleteId}
                 muted={mutedChannels?.has(c.id)}
                 onToggleMute={onToggleChannelMute ? () => onToggleChannelMute(c.id) : undefined}
+                tierRequired={c.tierRequired}
               />
             );
           })}
@@ -281,6 +282,7 @@ export function ChannelList(props: Props) {
                   setConfirmDeleteId={setConfirmDeleteId}
                   muted={mutedChannels?.has(c.id)}
                   onToggleMute={onToggleChannelMute ? () => onToggleChannelMute(c.id) : undefined}
+                  tierRequired={c.tierRequired}
                 />
               </div>
             );
@@ -337,6 +339,15 @@ function Section({
   );
 }
 
+function LockIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 text-ink-500">
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+}
+
 function ChannelItem({
   channelId,
   icon,
@@ -350,6 +361,7 @@ function ChannelItem({
   setConfirmDeleteId,
   muted,
   onToggleMute,
+  tierRequired,
 }: {
   channelId: string;
   icon: React.ReactNode;
@@ -363,6 +375,7 @@ function ChannelItem({
   setConfirmDeleteId?: (id: string | null) => void;
   muted?: boolean;
   onToggleMute?: () => void;
+  tierRequired?: string | null;
 }) {
   const hasUnread = unread > 0;
   const isConfirming = !!onDelete && confirmDeleteId === channelId;
@@ -389,6 +402,11 @@ function ChannelItem({
         <span className={`truncate flex-1 text-left text-[13px] ${hasUnread && !active ? 'font-semibold' : ''}`}>
           {name}
         </span>
+        {tierRequired && (
+          <span title="Tier required" className="shrink-0">
+            <LockIcon />
+          </span>
+        )}
         {badge && (
           <span className="pill bg-accent-violet/15 text-accent-violet border-0 text-[10px]">{badge}</span>
         )}
