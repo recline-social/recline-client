@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { FileAttachment, Member } from '../types';
 import { api } from '../lib/api';
-import { EmojiPicker } from './EmojiPicker';
+import { EmojiPicker } from './EmojiPickerLazy';
 
 export type ReplyingTo = {
   id: string;
@@ -112,6 +112,9 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
   // ── File attachment state ──────────────────────────────────────────────────
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pendingFile, setPendingFile]       = useState<File | null>(null);
+  // Local object URL of the original (plaintext) file — the server-side URL now
+  // holds ciphertext (E2EF-001), so previews must come from the local File.
+  const [previewUrl, setPreviewUrl]         = useState<string | null>(null);
   const [uploadPct, setUploadPct]           = useState<number>(0);
   const [uploadDone, setUploadDone]         = useState(false);
   const [uploadError, setUploadError]       = useState<string | null>(null);
@@ -134,6 +137,7 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
     xhrRef.current?.abort();
     xhrRef.current = null;
     setPendingFile(null);
+    setPreviewUrl((u) => { if (u) URL.revokeObjectURL(u); return null; });
     setUploadPct(0);
     setUploadDone(false);
     setUploadError(null);
@@ -149,13 +153,21 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
     }
     xhrRef.current?.abort();
     setPendingFile(file);
+    setPreviewUrl((u) => {
+      if (u) URL.revokeObjectURL(u);
+      return file.type.startsWith('image/') ? URL.createObjectURL(file) : null;
+    });
     setUploadPct(0);
     setUploadDone(false);
     setUploadError(null);
     setAttachment(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
     api.uploadFile(file, (pct) => setUploadPct(pct))
-      .then((att) => { setAttachment(att); setUploadDone(true); xhrRef.current = null; })
+      .then((att) => {
+        setAttachment({ url: att.url, name: att.name, size: att.size, type: att.type });
+        setUploadDone(true);
+        xhrRef.current = null;
+      })
       .catch((err: Error) => { setUploadError(err.message); xhrRef.current = null; });
   }, []);
 
@@ -403,10 +415,10 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
       {/* File preview card */}
       {pendingFile && (
         <div className="mb-1.5 rounded-xl bg-ink-800/70 border border-white/[0.06] overflow-hidden">
-          {/* Image preview */}
-          {pendingFile.type.startsWith('image/') && attachment && (
+          {/* Image preview — from the local file, not the server (which holds ciphertext) */}
+          {previewUrl && (
             <img
-              src={attachment.url}
+              src={previewUrl}
               alt={pendingFile.name}
               className="w-full max-h-48 object-contain bg-black/30"
             />

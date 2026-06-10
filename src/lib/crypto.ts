@@ -338,8 +338,14 @@ export async function decryptDmKeyBackupJwks(
 /** Import a backup history JWK as a non-extractable IDB history entry. */
 async function importHistoryEntry(privJwk: JsonWebKey): Promise<{ pubJwk: JsonWebKey; privateKey: CryptoKey }> {
   const pubJwk: JsonWebKey = { kty: privJwk.kty, crv: privJwk.crv, x: privJwk.x, y: privJwk.y };
+  // CRYPTO-011: strip key_ops before import. exportKey('jwk') emits key_ops
+  // mirroring the source key's usages (['deriveKey']); WebCrypto requires the
+  // import usages to be a SUBSET of key_ops when present, so requesting
+  // deriveBits here threw DataError and every history entry was silently
+  // skipped as "corrupt" — restored devices ended up with empty key history.
+  const { key_ops: _ko, ...importable } = privJwk;
   const privateKey = await crypto.subtle.importKey(
-    'jwk', privJwk, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey', 'deriveBits'],
+    'jwk', importable, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey', 'deriveBits'],
   );
   return { pubJwk, privateKey };
 }
@@ -411,7 +417,12 @@ export async function saveDmKeyPair(pair: CryptoKeyPair): Promise<void> {
   let privateKey = pair.privateKey;
   if (privateKey.extractable) {
     // Re-import as non-extractable so the stored key cannot be exfiltrated by XSS.
-    const privJwk = await crypto.subtle.exportKey('jwk', privateKey);
+    // CRYPTO-011: strip key_ops first — exportKey('jwk') emits key_ops mirroring
+    // the key's usages (['deriveKey']), and WebCrypto rejects an import whose
+    // usages aren't a subset of key_ops. With key_ops present this importKey
+    // threw DataError on EVERY extractable pair, so no DM key pair was ever
+    // persisted to IndexedDB and rotateDmKeyPair() always failed mid-way.
+    const { key_ops: _ko, ...privJwk } = await crypto.subtle.exportKey('jwk', privateKey);
     privateKey = await crypto.subtle.importKey(
       'jwk', privJwk,
       { name: 'ECDH', namedCurve: 'P-256' },

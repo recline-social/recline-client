@@ -73,7 +73,8 @@ export type InviteLink = {
   createdBy: string;
 };
 
-/** A file attached to a chat message — stored as plaintext alongside the ciphertext. */
+/** A file attached to a chat message. Files are stored as plaintext so
+ *  server-side and CDN-level CSAM scanning remains possible. */
 export type FileAttachment = {
   url: string;
   name: string;
@@ -149,6 +150,10 @@ export type DecodedMessage = WireMessage & {
   failed?: boolean;
   /** Decoded reply — populated after decrypt. Present whenever replyTo is set. */
   decodedReply?: DecodedReplyPreview | null;
+  /** E2EF-001: attachment key material + real metadata recovered from the
+   *  encrypted envelope. When set, fileName/fileSize/fileType on this message
+   *  have already been overridden with the real (decrypted) values. */
+  e2eAttachment?: import('./lib/attachmentCrypto').E2EAttachmentMeta | null;
 };
 
 // socketId is intentionally omitted — the server-wide voice:activity feed contains only
@@ -223,6 +228,9 @@ export type DmMessage = DmWireMessage & {
   reactions?: DmReaction[];
   /** Reply preview — populated client-side by looking up the replied-to message in local state. */
   decodedReply?: DmReplyPreview | null;
+  /** E2EF-001: attachment key material + real metadata recovered from the
+   *  encrypted envelope — see DecodedMessage.e2eAttachment. */
+  e2eAttachment?: import('./lib/attachmentCrypto').E2EAttachmentMeta | null;
 };
 
 export type DmReaction = {

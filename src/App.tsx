@@ -31,29 +31,12 @@ import {
   encryptText,
   getCachedKey,
   importKeyFromSession,
-  // DM ECDH
-  generateDmKeyPair,
-  loadDmKeyPair,
-  saveDmKeyPair,
-  exportPublicKeyJwk,
-  exportPrivateKeyJwk,
-  encryptDmKeyBackup,
-  decryptDmKeyBackup,
-  importPeerPublicKey,
-  deriveDmKey,
-  cacheDmKey,
-  getCachedDmKey,
+  // DM ECDH (key lifecycle itself lives in hooks/useDmKeys.ts)
   clearDmKey,
   clearAllDmKeys,
-  rotateDmKeyPair,
-  archiveCurrentKeyPair,
-  loadDmKeyHistory,
-  fingerprintJwk,
-  checkPeerKeyTofu,
-  repinPeerKey,
-  isPeerKeyKnown,
-  decryptDmKeyBackupJwks,
 } from './lib/crypto';
+import { useDmKeys } from './hooks/useDmKeys';
+import { unwrapAttachmentEnvelope } from './lib/attachmentCrypto';
 import { CallManager, type PeerSnapshot } from './lib/webrtc';
 import { playCallSound } from './lib/callSounds';
 import { VoiceBar } from './components/VoiceBar';
@@ -344,16 +327,10 @@ export default function App() {
   const [activeDmId, setActiveDmId] = useState<string | null>(null);
   const [dmMessages, setDmMessages] = useState<Record<string, DmMessage[]>>({});
   const [dmMsgLoaded, setDmMsgLoaded] = useState<Record<string, boolean>>({});
-  // True once setupDmKeys has placed a key pair in dmKeyPairRef; guards loadDmMessages
-  const [dmKeysReady, setDmKeysReady] = useState(false);
-  // True when the local ECDH key doesn't match the server's stored key AND no password is
-  // available to reconcile (page refresh scenario). DM decryption may be degraded.
-  const [dmKeyMismatch, setDmKeyMismatch] = useState(false);
+  // DM key sync banner form state (the mismatch flag itself lives in useDmKeys)
   const [dmSyncPw, setDmSyncPw] = useState('');
   const [dmSyncLoading, setDmSyncLoading] = useState(false);
   const [dmSyncErr, setDmSyncErr] = useState('');
-  // True when a backup upload failed during key rotation — signals degraded state to ProfileDialog
-  const [dmBackupOutOfSync, setDmBackupOutOfSync] = useState(false);
   const [dmHasMore, setDmHasMore] = useState<Record<string, boolean>>({});
   const [dmUnreadMap, setDmUnreadMap] = useState<Record<string, number>>({});
   // DM calls
@@ -382,11 +359,6 @@ export default function App() {
   const [profileCardUserId, setProfileCardUserId] = useState<string | null>(null);
   // Set of user IDs the current user has blocked
   const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
-  // CRYPTO-004 (TOFU): peer userIds whose DM key changed since first seen, and cached fingerprints
-  const [peerKeyChanged, setPeerKeyChanged] = useState<Set<string>>(new Set());
-  const [peerFingerprints, setPeerFingerprints] = useState<Record<string, string>>({});
-  // CRYPTO-004: own DM public-key fingerprint, shown in settings for out-of-band verification
-  const [myFingerprint, setMyFingerprint] = useState<string>('');
   // FEAT-040: notification mutes (scope id sets)
   const [mutedServers, setMutedServers] = useState<Set<string>>(new Set());
   const [mutedChannelIds, setMutedChannelIds] = useState<Set<string>>(new Set());
@@ -432,12 +404,6 @@ export default function App() {
   // browser notification permission (requested once after login)
   const notifPermRef = useRef<NotificationPermission>('default');
 
-  // ECDH DM key pair — generated once, persisted in IndexedDB, held in memory
-  const dmKeyPairRef = useRef<CryptoKeyPair | null>(null);
-  // Single-flight guard for setupDmKeys — see ensureDmKeys()
-  const dmKeySetupPromiseRef = useRef<Promise<void> | null>(null);
-  // Password held briefly (login → useEffect tick) for key backup setup, then cleared
-  const setupPasswordRef = useRef<string>('');
   // Fresh DM list accessible in socket callbacks without stale-closure issues
   const dmsRef = useRef(dms);
   useEffect(() => { dmsRef.current = dms; }, [dms]);
@@ -445,6 +411,34 @@ export default function App() {
   // from reading stale closure values (same pattern as dmsRef).
   const dmMessagesRef = useRef(dmMessages);
   useEffect(() => { dmMessagesRef.current = dmMessages; }, [dmMessages]);
+
+  // ── DM encryption key lifecycle — extracted to hooks/useDmKeys.ts ──────────
+  // Owns the ECDH key pair (dmKeyPairRef), setup/restore/rotation/sync flows,
+  // AES key derivation per DM channel, decrypt fallback through key history,
+  // and CRYPTO-004 TOFU peer-key tracking.
+  const {
+    dmKeysReady,
+    setDmKeysReady,
+    dmKeyMismatch,
+    setDmKeyMismatch,
+    dmBackupOutOfSync,
+    myFingerprint,
+    peerKeyChanged,
+    setPeerKeyChanged,
+    peerFingerprints,
+    setPeerFingerprints,
+    dmKeyPairRef,
+    setupPasswordRef,
+    ensureDmKeys,
+    getDmKey,
+    tryDecryptDm,
+    decryptDmMessages,
+    describeDmKeyFailure,
+    runPeerTofu,
+    handleAcceptPeerKey,
+    handleSyncDmKey,
+    handleRotateKey,
+  } = useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, setDmMsgLoaded });
 
   const socketRef = useRef<Socket | null>(null);
   // Guard against concurrent unlock attempts (user double-clicking the unlock button)
@@ -457,8 +451,6 @@ export default function App() {
   const typingTimersRef = useRef<Map<string, number>>(new Map());
   // Guard against concurrent createChannel calls (double-click)
   const creatingChannelRef = useRef(false);
-  // Guard against concurrent key rotation calls
-  const rotatingRef = useRef(false);
 
   // refs so socket handlers always see fresh state (avoids stale closures
   // because the handlers are bound once when the socket connects).
@@ -723,13 +715,15 @@ export default function App() {
       if (msg.replyTo && key) {
         try {
           const replyBody = await decryptText(key, msg.replyTo.ciphertext, msg.replyTo.nonce);
-          decodedReply = { id: msg.replyTo.id, senderId: msg.replyTo.senderId, senderName: msg.replyTo.senderName, body: replyBody, failed: false };
+          decodedReply = { id: msg.replyTo.id, senderId: msg.replyTo.senderId, senderName: msg.replyTo.senderName, body: unwrapAttachmentEnvelope(replyBody).text, failed: false };
         } catch {
           decodedReply = { id: msg.replyTo.id, senderId: msg.replyTo.senderId, senderName: msg.replyTo.senderName, body: '[could not decrypt]', failed: true };
         }
       } else if (msg.replyTo) {
         decodedReply = { id: msg.replyTo.id, senderId: msg.replyTo.senderId, senderName: msg.replyTo.senderName, body: '[locked]', failed: true };
       }
+      // E2EF-001: recover attachment key material + real file metadata from the envelope
+      const env = unwrapAttachmentEnvelope(body);
       setChannelMsgs((prev) => {
         const existing = prev[msg.channelId] ?? { messages: [], loaded: false };
         if (existing.messages.find((m) => m.id === msg.id)) return prev;
@@ -737,7 +731,10 @@ export default function App() {
           ...prev,
           [msg.channelId]: {
             loaded: existing.loaded,
-            messages: [...existing.messages, { ...msg, body, failed, decodedReply }],
+            messages: [...existing.messages, {
+              ...msg, body: env.text, failed, decodedReply, e2eAttachment: env.att,
+              ...(env.att ? { fileName: env.att.name, fileSize: env.att.size, fileType: env.att.type } : {}),
+            }],
           },
         };
       });
@@ -894,6 +891,9 @@ export default function App() {
         body = '[locked — unlock server to read]';
         failed = true;
       }
+      // E2EF-001: an edited message re-wraps its attachment envelope — unwrap it.
+      // Fall back to the previous e2eAttachment if the new ciphertext has none.
+      const env = unwrapAttachmentEnvelope(body);
       setChannelMsgs((prev) => {
         const state = prev[data.channelId];
         if (!state) return prev;
@@ -903,7 +903,10 @@ export default function App() {
             ...state,
             messages: state.messages.map((m) =>
               m.id === data.id
-                ? { ...m, ciphertext: data.ciphertext, nonce: data.nonce, body, failed, editedAt: data.editedAt }
+                ? {
+                    ...m, ciphertext: data.ciphertext, nonce: data.nonce, body: env.text, failed, editedAt: data.editedAt,
+                    e2eAttachment: env.att ?? m.e2eAttachment,
+                  }
                 : m,
             ),
           },
@@ -1065,7 +1068,11 @@ export default function App() {
       if (wire.ciphertext && wire.nonce && dmChannel) {
         try {
           const r = await tryDecryptDm(wire.ciphertext, wire.nonce, dmChannel, wire.senderEcdhPublicKey);
-          decoded = { ...wire, body: r.body, failed: false, unverifiedKey: r.unverifiedKey };
+          const env = unwrapAttachmentEnvelope(r.body);
+          decoded = {
+            ...wire, body: env.text, failed: false, unverifiedKey: r.unverifiedKey, e2eAttachment: env.att,
+            ...(env.att ? { fileName: env.att.name, fileSize: env.att.size, fileType: env.att.type } : {}),
+          };
         } catch {
           decoded = { ...wire, body: '[could not decrypt]', failed: true };
         }
@@ -1276,6 +1283,8 @@ export default function App() {
           failed = false;
         } catch { /* keep defaults */ }
       }
+      // E2EF-001: edited DM re-wraps its attachment envelope — unwrap, keep old meta as fallback
+      const env = unwrapAttachmentEnvelope(newBody);
       setDmMessages((prev) => {
         const msgs = prev[data.dmChannelId];
         if (!msgs) return prev;
@@ -1283,7 +1292,7 @@ export default function App() {
           ...prev,
           [data.dmChannelId]: msgs.map((m) =>
             m.id === data.id
-              ? { ...m, ciphertext: data.ciphertext, nonce: data.nonce, body: newBody, editedAt: data.editedAt, failed }
+              ? { ...m, ciphertext: data.ciphertext, nonce: data.nonce, body: env.text, editedAt: data.editedAt, failed, e2eAttachment: env.att ?? m.e2eAttachment }
               : m
           ),
         };
@@ -1674,14 +1683,18 @@ export default function App() {
         if (m.replyTo && key) {
           try {
             const replyBody = await decryptText(key, m.replyTo.ciphertext, m.replyTo.nonce);
-            decodedReply = { id: m.replyTo.id, senderId: m.replyTo.senderId, senderName: m.replyTo.senderName, body: replyBody, failed: false };
+            decodedReply = { id: m.replyTo.id, senderId: m.replyTo.senderId, senderName: m.replyTo.senderName, body: unwrapAttachmentEnvelope(replyBody).text, failed: false };
           } catch {
             decodedReply = { id: m.replyTo.id, senderId: m.replyTo.senderId, senderName: m.replyTo.senderName, body: '[could not decrypt]', failed: true };
           }
         } else if (m.replyTo) {
           decodedReply = { id: m.replyTo.id, senderId: m.replyTo.senderId, senderName: m.replyTo.senderName, body: '[locked]', failed: true };
         }
-        decoded.push({ ...m, body, failed, decodedReply });
+        const env = unwrapAttachmentEnvelope(body);
+        decoded.push({
+          ...m, body: env.text, failed, decodedReply, e2eAttachment: env.att,
+          ...(env.att ? { fileName: env.att.name, fileSize: env.att.size, fileType: env.att.type } : {}),
+        });
       }
       if (cancelled) return;
       // Merge with any socket-pushed messages that arrived while we were
@@ -1738,35 +1751,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDmId, dmKeysReady]);
 
-  /* CRYPTO-004: TOFU check + fingerprint for a peer's DM public key. */
-  function runPeerTofu(userId: string, jwkString: string) {
-    const status = checkPeerKeyTofu(userId, jwkString);
-    setPeerKeyChanged((prev) => {
-      const want = status === 'changed';
-      if (prev.has(userId) === want) return prev;
-      const next = new Set(prev);
-      if (want) next.add(userId); else next.delete(userId);
-      return next;
-    });
-    fingerprintJwk(jwkString)
-      .then((fp) => setPeerFingerprints((prev) => (prev[userId] === fp ? prev : { ...prev, [userId]: fp })))
-      .catch(() => {});
-  }
-
-  /* CRYPTO-004: user confirms a changed peer key is legitimate — re-pin and re-derive. */
-  function handleAcceptPeerKey(dmChannelId: string) {
-    const dm = dmsRef.current.find((d) => d.id === dmChannelId);
-    if (!dm?.otherPublicKey) return;
-    repinPeerKey(dm.otherUserId, dm.otherPublicKey);
-    setPeerKeyChanged((prev) => {
-      if (!prev.has(dm.otherUserId)) return prev;
-      const next = new Set(prev);
-      next.delete(dm.otherUserId);
-      return next;
-    });
-    clearDmKey(dmChannelId);
-  }
-
   /* FEAT-020: Cmd/Ctrl+K opens message search. */
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1778,39 +1762,6 @@ export default function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-
-  /* CRYPTO-004: compute own DM public-key fingerprint for the security settings panel. */
-  useEffect(() => {
-    if (!dmKeysReady || !dmKeyPairRef.current) { setMyFingerprint(''); return; }
-    let cancelled = false;
-    exportPublicKeyJwk(dmKeyPairRef.current.publicKey)
-      .then((jwk) => fingerprintJwk(jwk))
-      .then((fp) => { if (!cancelled) setMyFingerprint(fp); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dmKeysReady]);
-
-  /* ------------------------ Re-decrypt failed DMs when keys become available ------------------------ */
-  useEffect(() => {
-    if (!dmKeysReady) return;
-    // Clear loaded state for any DM channel with failed messages so they get re-fetched and re-decrypted.
-    // Use dmMessagesRef.current so we always read the latest state, not the stale closure value that
-    // was captured when dmKeysReady first became true (the ref is kept in sync via its own useEffect).
-    setDmMsgLoaded((prev) => {
-      const current = dmMessagesRef.current;
-      const updated = { ...prev };
-      let changed = false;
-      for (const [chanId, msgs] of Object.entries(current)) {
-        if (msgs.some((m) => m.failed) && updated[chanId]) {
-          delete updated[chanId];
-          changed = true;
-        }
-      }
-      return changed ? updated : prev;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dmKeysReady]);
 
   /* ------------------------ Helpers ------------------------ */
   const memberMap = useMemo(() => {
@@ -1905,12 +1856,16 @@ export default function App() {
             if (m.replyTo) {
               try {
                 const replyBody = await decryptText(key, m.replyTo.ciphertext, m.replyTo.nonce);
-                decodedReply = { id: m.replyTo.id, senderId: m.replyTo.senderId, senderName: m.replyTo.senderName, body: replyBody, failed: false };
+                decodedReply = { id: m.replyTo.id, senderId: m.replyTo.senderId, senderName: m.replyTo.senderName, body: unwrapAttachmentEnvelope(replyBody).text, failed: false };
               } catch {
                 decodedReply = { id: m.replyTo.id, senderId: m.replyTo.senderId, senderName: m.replyTo.senderName, body: '[could not decrypt]', failed: true };
               }
             }
-            fresh.push({ ...m, body, failed: false, decodedReply });
+            const env = unwrapAttachmentEnvelope(body);
+            fresh.push({
+              ...m, body: env.text, failed: false, decodedReply, e2eAttachment: env.att,
+              ...(env.att ? { fileName: env.att.name, fileSize: env.att.size, fileType: env.att.type } : {}),
+            });
           } catch {
             fresh.push({ ...m, body: '[could not decrypt]', failed: true });
           }
@@ -1980,10 +1935,12 @@ export default function App() {
   async function handleEditMessage(id: string, newText: string) {
     const socket = socketRef.current;
     if (!socket) return;
-    // Find the channel for this message
+    // Find the channel + message for this edit
     let channelId: string | null = null;
+    let target: DecodedMessage | undefined;
     for (const [cid, state] of Object.entries(channelMsgs)) {
-      if (state.messages.some((m) => m.id === id)) { channelId = cid; break; }
+      const found = state.messages.find((m) => m.id === id);
+      if (found) { channelId = cid; target = found; break; }
     }
     if (!channelId) return;
     const channel = lookupChannel(channelId);
@@ -2198,184 +2155,7 @@ export default function App() {
   }
 
   // ── DM actions ─────────────────────────────────────────────────────────────
-
-  /**
-   * Get (or derive) the AES-GCM key for a DM channel.
-   * Returns null if our key pair isn't ready or the peer hasn't registered a key.
-   */
-  async function getDmKey(dmChannel: DmChannel): Promise<CryptoKey | null> {
-    const cached = getCachedDmKey(dmChannel.id);
-    if (cached) return cached;
-
-    // DM AES-GCM keys are memory-only (non-extractable) — no sessionStorage persistence.
-    // On page reload the key is re-derived from the ECDH key pair (cheap, ~1ms).
-    if (!dmKeyPairRef.current) return null;
-
-    // otherPublicKey can be null when the DM channel was loaded before the peer registered
-    // their ECDH key, or when the initial GET /api/dms was cached and the peer registered
-    // later.  Fetch fresh rather than silently failing — this unblocks the admin account
-    // DMing users who registered their key after the DM list was first loaded.
-    let peerKeyJwk = dmChannel.otherPublicKey;
-    if (!peerKeyJwk) {
-      try {
-        const { publicKey } = await api.getPeerPublicKey(dmChannel.otherUserId);
-        if (publicKey) {
-          peerKeyJwk = publicKey;
-          // Patch the cached channel so future calls (and dmsRef lookups) don't re-fetch
-          setDms((prev) => {
-            const next = prev.map((d) =>
-              d.id === dmChannel.id ? { ...d, otherPublicKey: publicKey } : d,
-            );
-            dmsRef.current = next;
-            return next;
-          });
-        }
-      } catch { /* non-fatal — peer may not have registered yet; return null below */ }
-    }
-
-    if (!peerKeyJwk) return null;
-
-    try {
-      const peerKey = await importPeerPublicKey(peerKeyJwk);
-      const aesKey = await deriveDmKey(dmKeyPairRef.current.privateKey, peerKey, dmChannel.id);
-      cacheDmKey(dmChannel.id, aesKey);
-      return aesKey;
-    } catch { return null; }
-  }
-
-  /**
-   * Decrypt a single DM ciphertext, falling back through archived key pairs if the
-   * current derived key fails. This handles the post-rotation scenario where old
-   * messages were encrypted with a previous ECDH key pair.
-   *
-   * CRYPTO-006: `senderEcdhPublicKey` is the sender's key at the time the message
-   * was sent (snapshotted on the server).  When provided and different from the
-   * current peer public key, we try it first so post-rotation historical messages
-   * can be decrypted without walking all key history.
-   */
-  async function tryDecryptDm(
-    ciphertext: string,
-    nonce: string,
-    dmChannel: DmChannel,
-    senderEcdhPublicKey?: string | null,
-  ): Promise<{ body: string; unverifiedKey: boolean }> {
-    // Fast path: try the current derived key (cache hit — no imports needed)
-    const currentKey = await getDmKey(dmChannel);
-    if (currentKey) {
-      try { return { body: await decryptText(currentKey, ciphertext, nonce), unverifiedKey: false }; } catch {
-        // Cached AES key failed — may be stale after a peer key rotation where the DM list was
-        // refreshed (otherPublicKey updated) but the cache still holds the pre-rotation AES key.
-        // Invalidate and immediately re-derive with the current peer public key.
-        clearDmKey(dmChannel.id);
-        const freshKey = await getDmKey(dmChannel);
-        if (freshKey) {
-          try { return { body: await decryptText(freshKey, ciphertext, nonce), unverifiedKey: false }; } catch { /* fall through */ }
-        }
-      }
-    }
-
-    // BUG 9: single lazy-loaded history cache — avoids calling loadDmKeyHistory() twice
-    let _history: CryptoKeyPair[] | null = null;
-    const getHistory = async () => {
-      if (!_history) _history = await loadDmKeyHistory();
-      return _history;
-    };
-
-    // CRYPTO-006: sender's key at send-time differs from current peer key → derive
-    // against that specific epoch using current and historical own private keys.
-    //
-    // TOFU gate: the snapshot key is server-supplied and the server can forge
-    // ciphertext that decrypts against a key it invented (it knows our public key
-    // and the channel ID). A snapshot that matches no key ever pinned or accepted
-    // for this peer is still decrypted — it may be a legit pre-TOFU epoch — but
-    // the result is flagged so the UI can warn instead of silently trusting it.
-    const snapshotIsKnown = senderEcdhPublicKey
-      ? isPeerKeyKnown(dmChannel.otherUserId, senderEcdhPublicKey)
-      : true;
-    if (senderEcdhPublicKey && senderEcdhPublicKey !== dmChannel.otherPublicKey) {
-      try {
-        const snapshotKey = await importPeerPublicKey(senderEcdhPublicKey);
-        const currentPair = dmKeyPairRef.current;
-        if (currentPair) {
-          try {
-            const k = await deriveDmKey(currentPair.privateKey, snapshotKey, dmChannel.id);
-            return { body: await decryptText(k, ciphertext, nonce), unverifiedKey: !snapshotIsKnown };
-          } catch { /* fall through */ }
-        }
-        const history = await getHistory();
-        for (const oldPair of history) {
-          try {
-            const k = await deriveDmKey(oldPair.privateKey, snapshotKey, dmChannel.id);
-            return { body: await decryptText(k, ciphertext, nonce), unverifiedKey: !snapshotIsKnown };
-          } catch { /* try next */ }
-        }
-      } catch { /* importPeerPublicKey failed — sender key snapshot invalid */ }
-    }
-
-    // Original fallback: walk all archived own keys × current peer public key
-    if (dmChannel.otherPublicKey) {
-      const history = await getHistory();
-      if (history.length > 0) {
-        const peerKey = await importPeerPublicKey(dmChannel.otherPublicKey);
-        for (const oldPair of history) {
-          try {
-            const oldAesKey = await deriveDmKey(oldPair.privateKey, peerKey, dmChannel.id);
-            return { body: await decryptText(oldAesKey, ciphertext, nonce), unverifiedKey: false };
-          } catch { /* try next archived key */ }
-        }
-      }
-    }
-
-    // BUG 8: also try senderEcdhPublicKey (the peer's key at send time) against all our
-    // historical keys — handles the case where BOTH sides have rotated since the message was sent.
-    if (senderEcdhPublicKey && senderEcdhPublicKey !== dmChannel.otherPublicKey) {
-      try {
-        const senderKeyAtSendTime = await importPeerPublicKey(senderEcdhPublicKey);
-        const history2 = await getHistory();
-        for (const oldPair of history2) {
-          try {
-            const oldAesKey = await deriveDmKey(oldPair.privateKey, senderKeyAtSendTime, dmChannel.id);
-            return { body: await decryptText(oldAesKey, ciphertext, nonce), unverifiedKey: !snapshotIsKnown };
-          } catch { continue; }
-        }
-      } catch { /* importPeerPublicKey failed */ }
-    }
-
-    throw new Error('decrypt failed with all available keys');
-  }
-
-  /** Decrypt a batch of DM wire messages for a channel.
-   *  @param existingMsgs — already-decoded messages in the channel (used for reply lookups). */
-  async function decryptDmMessages(wire: DmWireMessage[], dmChannel: DmChannel, existingMsgs?: DmMessage[]): Promise<DmMessage[]> {
-    const result: DmMessage[] = [];
-    for (const m of wire) {
-      if (m.ciphertext && m.nonce) {
-        try {
-          const r = await tryDecryptDm(m.ciphertext, m.nonce, dmChannel, m.senderEcdhPublicKey);
-          result.push({ ...m, body: r.body, failed: false, unverifiedKey: r.unverifiedKey });
-        } catch {
-          result.push({ ...m, body: '[could not decrypt]', failed: true });
-        }
-      } else {
-        // Legacy plaintext message — not E2E encrypted
-        result.push({ ...m, body: m.body ?? '', failed: false, isPlaintext: true });
-      }
-    }
-    // Attach decodedReply — look up within decoded batch first, then caller-supplied existing msgs
-    const pool = new Map<string, DmMessage>();
-    for (const m of existingMsgs ?? []) pool.set(m.id, m);
-    for (const m of result) pool.set(m.id, m);
-    return result.map((m) => {
-      if (!m.replyToId) return m;
-      const target = pool.get(m.replyToId);
-      if (!target) return { ...m, decodedReply: null };
-      const senderName = target.senderId === dmChannel.otherUserId ? dmChannel.otherDisplayName : (user?.displayName ?? 'You');
-      return {
-        ...m,
-        decodedReply: { id: target.id, senderId: target.senderId, senderName, body: target.body, failed: target.failed },
-      };
-    });
-  }
+  // (getDmKey / tryDecryptDm / decryptDmMessages live in hooks/useDmKeys.ts)
 
   async function openDm(userId: string) {
     const { dm } = await api.openDm(userId);
@@ -2453,14 +2233,18 @@ export default function App() {
       if (m.replyTo && key) {
         try {
           const replyBody = await decryptText(key, m.replyTo.ciphertext, m.replyTo.nonce);
-          decodedReply = { id: m.replyTo.id, senderId: m.replyTo.senderId, senderName: m.replyTo.senderName, body: replyBody, failed: false };
+          decodedReply = { id: m.replyTo.id, senderId: m.replyTo.senderId, senderName: m.replyTo.senderName, body: unwrapAttachmentEnvelope(replyBody).text, failed: false };
         } catch {
           decodedReply = { id: m.replyTo.id, senderId: m.replyTo.senderId, senderName: m.replyTo.senderName, body: '[could not decrypt]', failed: true };
         }
       } else if (m.replyTo) {
         decodedReply = { id: m.replyTo.id, senderId: m.replyTo.senderId, senderName: m.replyTo.senderName, body: '[locked]', failed: true };
       }
-      decoded.push({ ...m, body, failed, decodedReply });
+      const env = unwrapAttachmentEnvelope(body);
+      decoded.push({
+        ...m, body: env.text, failed, decodedReply, e2eAttachment: env.att,
+        ...(env.att ? { fileName: env.att.name, fileSize: env.att.size, fileType: env.att.type } : {}),
+      });
     }
     setChannelMsgs((prev) => {
       const st = prev[channelId];
@@ -2765,34 +2549,7 @@ export default function App() {
     socketRef.current?.emit('dm:typing:start', dmChannelId);
   }
 
-  /**
-   * Build a SPECIFIC error message when DM encryption is impossible. getDmKey
-   * collapses several distinct causes into `null`; surfacing which one actually
-   * happened turns "weird, DMs just don't work" into an actionable message.
-   */
-  async function describeDmKeyFailure(dmChannel: DmChannel | undefined): Promise<string> {
-    const prefix = 'Unable to encrypt message — ';
-    if (!dmChannel) return prefix + 'this conversation failed to load. Try reloading.';
-    if (!dmKeyPairRef.current) return prefix + 'your encryption keys are still loading. Try again in a few seconds.';
-    try {
-      const { publicKey } = await api.getPeerPublicKey(dmChannel.otherUserId);
-      if (!publicKey) {
-        return prefix + `${dmChannel.otherDisplayName} hasn't set up encryption yet. They need to log in once first.`;
-      }
-      return prefix + 'key derivation failed. Try reloading.';
-    } catch (err) {
-      const status = (err as Error & { status?: number })?.status;
-      if (status === 404) {
-        return prefix + `${dmChannel.otherDisplayName} hasn't set up encryption yet. They need to log in once first.`;
-      }
-      if (status === 403) {
-        return prefix + `the server blocked access to ${dmChannel.otherDisplayName}'s key: ${(err as Error).message}`;
-      }
-      return prefix + `couldn't fetch ${dmChannel.otherDisplayName}'s key (${(err as Error).message}). Check your connection and try again.`;
-    }
-  }
-
-  async function sendDmMessage(dmId: string, text: string, file?: { fileUrl: string; fileName: string; fileSize: number; fileType: string }, replyToId?: string | null) {
+  async function sendDmMessage(dmId: string, text: string, file?: { fileUrl: string; fileName: string; fileSize: number; fileType: string; k?: string; iv?: string; encSize?: number }, replyToId?: string | null) {
     // Self-heal: if the login-time key setup failed or is still in flight,
     // actively (re-)run it now instead of blind-polling. ensureDmKeys is
     // single-flight, so this either joins the in-progress attempt or starts a
@@ -2812,9 +2569,14 @@ export default function App() {
     }
     const dmChannel = dmsRef.current.find((d) => d.id === dmId);
     const key = dmChannel ? await getDmKey(dmChannel) : null;
-    const fileFields = file ? { fileUrl: file.fileUrl, fileName: file.fileName, fileSize: file.fileSize, fileType: file.fileType } : {};
+    const fileFields = file ? {
+      fileUrl: file.fileUrl,
+      fileName: file.fileName,
+      fileSize: file.fileSize,
+      fileType: file.fileType,
+    } : {};
     const replyField = replyToId ? { replyToId } : {};
-    if (text.trim()) {
+    if (text.trim() || file) {
       if (key) {
         const { ciphertext, nonce } = await encryptText(key, text);
         await api.sendDmMessage(dmId, { ciphertext, nonce, ...fileFields, ...replyField });
@@ -2822,9 +2584,6 @@ export default function App() {
         console.error('[sendDmMessage] no DM key available — refusing to send plaintext');
         throw new Error(await describeDmKeyFailure(dmChannel));
       }
-    } else if (file) {
-      // File-only message — no text body
-      await api.sendDmMessage(dmId, { ...fileFields, ...replyField } as any);
     }
     // Stop typing indicator when message is sent
     socketRef.current?.emit('dm:typing:stop', dmId);
@@ -2982,343 +2741,6 @@ export default function App() {
     pendingSupporterCheckRef.current = false;
     callManagerRef.current?.leave();
     disconnectSocket();
-  }
-
-  /**
-   * Set up the ECDH DM key pair on login.
-   * Priority: (1) existing IndexedDB key → (2) server backup → (3) generate fresh.
-   * When a key already exists locally, uploads a backup if the server has none yet.
-   */
-  /** Compare two exported public key JWK strings by their elliptic curve point (x, y, crv).
-   *  Safer than string equality — avoids false-mismatches from JSON field ordering. */
-  function jwkPointMatches(a: string | null, b: string | null): boolean {
-    if (!a || !b) return false;
-    try {
-      const ja = JSON.parse(a);
-      const jb = JSON.parse(b);
-      return ja.x === jb.x && ja.y === jb.y && ja.crv === jb.crv;
-    } catch { return false; }
-  }
-
-  /**
-   * Single-flight wrapper around setupDmKeys: concurrent callers (login effect,
-   * a retry, a send-path self-heal) share one in-progress attempt instead of
-   * racing IndexedDB and the key-registration endpoint against each other.
-   * Resolves immediately when the key pair already exists.
-   */
-  function ensureDmKeys(pw = ''): Promise<void> {
-    if (dmKeyPairRef.current) return Promise.resolve();
-    if (!dmKeySetupPromiseRef.current) {
-      dmKeySetupPromiseRef.current = setupDmKeys(pw).finally(() => {
-        dmKeySetupPromiseRef.current = null;
-      });
-    }
-    return dmKeySetupPromiseRef.current;
-  }
-
-  async function setupDmKeys(suppliedPw: string): Promise<void> {
-    // M-7: Raw password is no longer cached in sessionStorage (was 'recline.session.pw').
-    // On page refresh, suppliedPw is empty and we rely on IndexedDB for the key pair.
-    // If a mismatch is detected without a password, the UI banner prompts re-login.
-    const password = suppliedPw;
-    // authKdfSalt is included in the /api/auth/me response for v2 users.
-    const authKdfSalt = user?.authKdfSalt ?? null;
-
-    // STEP 1: Fetch what the server currently has registered as our public key.
-    // By comparing first we avoid blindly attempting a PUT that would 400 — eliminating
-    // the persistent 400 loop that appears in the network tab on every page refresh.
-    let serverKeyJwk: string | null = null;
-    try {
-      const { publicKey } = await api.getMyPublicKey();
-      serverKeyJwk = publicKey;
-    } catch { /* non-fatal — treat as unknown server state, proceed normally */ }
-
-    let pair = await loadDmKeyPair();
-
-    // A corrupt stored pair must not strand the whole key pipeline — treat it
-    // as missing and fall through to backup-restore / fresh generation.
-    let localJwk = '';
-    if (pair) {
-      try {
-        localJwk = await exportPublicKeyJwk(pair.publicKey);
-      } catch (err) {
-        console.error('[setupDmKeys] stored key pair unusable — regenerating:', err);
-        pair = null;
-      }
-    }
-
-    if (pair) {
-
-      // ── Case 1: keys match ────────────────────────────────────────────────
-      if (jwkPointMatches(localJwk, serverKeyJwk)) {
-        setDmKeyMismatch(false);
-        dmKeyPairRef.current = pair;
-        setDmKeysReady(true);
-        setDmMsgLoaded({});
-        // Always upload a fresh backup on login — overwrites any stale backup that may
-        // be encrypted with an old password or old key.  Previously we only uploaded when
-        // no backup existed, which left stale v1/v2 blobs on the server forever after a
-        // password change or key rotation, breaking cross-device sync on the other device.
-        if (password) {
-          try {
-            const privJwk = await exportPrivateKeyJwk(pair.privateKey);
-            if (privJwk) {
-              const blob = await encryptDmKeyBackup(privJwk, password);
-              await api.putDmKeyBackup(blob);
-            }
-          } catch { /* non-fatal */ }
-        }
-        return;
-      }
-
-      // ── Case 2: server has no key yet — first-time registration ──────────
-      if (serverKeyJwk === null) {
-        await api.registerPublicKey(localJwk).catch(() => {});
-        setDmKeyMismatch(false);
-        dmKeyPairRef.current = pair;
-        setDmKeysReady(true);
-        setDmMsgLoaded({});
-        if (password) {
-          try {
-            const privJwk = await exportPrivateKeyJwk(pair.privateKey);
-            if (privJwk) {
-              const blob = await encryptDmKeyBackup(privJwk, password);
-              await api.putDmKeyBackup(blob);
-            }
-          } catch { /* non-fatal */ }
-        }
-        return;
-      }
-
-      // ── Case 3: genuine mismatch (e.g. key rotated on another device) ────
-      if (password) {
-        // Priority 1: restore from backup — it should hold the key the server knows.
-        let restored: CryptoKeyPair | null = null;
-        try {
-          const { backup } = await api.getDmKeyBackup(password, authKdfSalt);
-          if (backup) restored = await decryptDmKeyBackup(backup, password);
-        } catch { /* non-fatal */ }
-
-        if (restored) {
-          const restoredJwk = await exportPublicKeyJwk(restored.publicKey);
-          // Persistence failure must not block using the key this session.
-          await saveDmKeyPair(restored).catch((err) =>
-            console.error('[setupDmKeys] could not persist restored key (continuing in-memory):', err));
-          pair = restored;
-          // If the restored key already matches the server key, no re-registration needed.
-          if (!jwkPointMatches(restoredJwk, serverKeyJwk)) {
-            await api.registerPublicKey(restoredJwk, password).catch(() => {});
-          }
-          dmKeyPairRef.current = pair;
-          setDmKeyMismatch(false);
-          setDmKeysReady(true);
-          setDmMsgLoaded({});
-          return;
-        }
-
-        // Priority 2: force-register local key with password + upload fresh backup.
-        await api.registerPublicKey(localJwk, password).catch(() => {});
-        dmKeyPairRef.current = pair;
-        setDmKeyMismatch(false);
-        setDmKeysReady(true);
-        setDmMsgLoaded({});
-        try {
-          const privJwk = await exportPrivateKeyJwk(pair.privateKey);
-          if (privJwk) {
-            const blob = await encryptDmKeyBackup(privJwk, password);
-            await api.putDmKeyBackup(blob);
-          }
-        } catch { /* non-fatal */ }
-        return;
-      }
-
-      // Mismatch + no password (page refresh) — can't reconcile without credentials.
-      // Use local key anyway; show a banner telling the user to log out → log in.
-      setDmKeyMismatch(true);
-      dmKeyPairRef.current = pair;
-      setDmKeysReady(true);
-      setDmMsgLoaded({});
-      return;
-    }
-
-    // ── No local key at all ───────────────────────────────────────────────────
-    // Try restoring from server backup (requires login password).
-    if (password) {
-      try {
-        const { backup } = await api.getDmKeyBackup(password, authKdfSalt);
-        if (backup) {
-          const restored = await decryptDmKeyBackup(backup, password);
-          if (restored) {
-            await saveDmKeyPair(restored);
-            dmKeyPairRef.current = restored;
-            setDmKeyMismatch(false);
-            setDmKeysReady(true);
-            setDmMsgLoaded({});
-            const restoredJwk = await exportPublicKeyJwk(restored.publicKey);
-            if (!jwkPointMatches(restoredJwk, serverKeyJwk)) {
-              // BUG 7: pass password so server can verify ownership before overwriting existing key
-              await api.registerPublicKey(restoredJwk, password).catch(() => {});
-            }
-            return;
-          }
-        }
-      } catch { /* non-fatal — fall through to generate */ }
-    }
-
-    // Generate a fresh key pair — either first-ever login or no backup available.
-    pair = await generateDmKeyPair();
-    // Set the ref BEFORE any persistence/network step — an IndexedDB write
-    // failure must degrade to an in-memory key, never to "no key at all"
-    // (the old unguarded await here stranded dmKeyPairRef as null forever).
-    dmKeyPairRef.current = pair;
-    await saveDmKeyPair(pair).catch((err) =>
-      console.error('[setupDmKeys] could not persist fresh key (continuing in-memory):', err));
-    setDmMsgLoaded({});
-    const freshJwk = await exportPublicKeyJwk(pair.publicKey);
-    // CLIENT-004: await registerPublicKey before setDmKeysReady so the server
-    // has the public key before we start sending/receiving DMs.  Use try/catch
-    // so a network error is visible in the console but never blocks the user.
-    try {
-      if (serverKeyJwk === null) {
-        // Server has no key — register freely (no password needed).
-        await api.registerPublicKey(freshJwk);
-        setDmKeyMismatch(false);
-      } else if (password) {
-        // Server has a different key — override with password.
-        await api.registerPublicKey(freshJwk, password);
-        setDmKeyMismatch(false);
-      } else {
-        // Server has a key we can't override without credentials.
-        // Flag mismatch — user needs to log in once to reconcile.
-        setDmKeyMismatch(true);
-      }
-    } catch (err) {
-      console.error('[setupDmKeys] registerPublicKey failed:', err);
-      // Still mark keys ready so the user is not blocked from the DM UI.
-    }
-    setDmKeysReady(true);
-    if (password) {
-      try {
-        const privJwk = await exportPrivateKeyJwk(pair.privateKey);
-        if (privJwk) {
-          const blob = await encryptDmKeyBackup(privJwk, password);
-          await api.putDmKeyBackup(blob);
-        }
-      } catch { /* non-fatal */ }
-    }
-  }
-
-  /**
-   * Sync the local DM key pair from the server backup.
-   * Used when a user has different keys on two devices — call from Security tab.
-   * Clears the current local key and restores the backup using the provided password.
-   */
-  async function handleSyncDmKey(password: string): Promise<void> {
-    const { backup } = await api.getDmKeyBackup(password, user?.authKdfSalt ?? null);
-    if (!backup) throw new Error('No key backup found on server. Log in on your other device first.');
-    const restored = await decryptDmKeyBackup(backup, password);
-    if (!restored) throw new Error('Wrong password or corrupted backup.');
-    await saveDmKeyPair(restored);
-    dmKeyPairRef.current = restored;
-    clearAllDmKeys();
-    setDmMsgLoaded({});
-    setDmMessages({});
-    const pubJwk = await exportPublicKeyJwk(restored.publicKey);
-    // BUG 6: pass password so the server can verify ownership before overwriting an existing key
-    await api.registerPublicKey(pubJwk, password).catch(() => {});
-    setDmKeyMismatch(false);
-    // Clear backup-out-of-sync flag now that sync succeeded
-    setDmBackupOutOfSync(false);
-    // M-7: Raw password is not cached in sessionStorage.
-    // Key pair is already saved to IndexedDB by saveDmKeyPair above — no password cache needed.
-  }
-
-  async function handleRotateKey(password: string): Promise<void> {
-    // BUG 1: concurrent invocation guard
-    if (rotatingRef.current) return;
-    rotatingRef.current = true;
-
-    // BUG 2: mark keys not ready during rotation so concurrent DM ops don't use a half-rotated key
-    setDmKeysReady(false);
-    // BUG 4: clear any previous backup-out-of-sync flag at the start of a new attempt
-    setDmBackupOutOfSync(false);
-
-    let newKeySaved = false;
-    try {
-      // BUG 5 (reordered): safe rotation order:
-      // 1. Generate a new key pair (nothing touched yet).
-      // 2. Export the public key JWK.
-      // 3. Archive the current key FIRST — if this throws, abort before touching anything.
-      // 4. Save the new key to IDB — if this throws, old key is in history.
-      // 5. Update the in-memory ref.
-      // 6. Push new public key to the server — if this fails, local state is correct; user can retry.
-      // 7. Clear AES cache, reset DM message state.
-      // 8. Upload backup (non-fatal).
-      const newPair = await generateDmKeyPair();
-      const pubJwk = await exportPublicKeyJwk(newPair.publicKey);
-
-      // Step 3: archive old key first
-      await archiveCurrentKeyPair();
-
-      // Export private key BEFORE saving (while still extractable — saveDmKeyPair re-imports as non-extractable)
-      const privJwkForBackup = await exportPrivateKeyJwk(newPair.privateKey);
-
-      // Step 4: persist new key to IDB
-      await saveDmKeyPair(newPair);
-      newKeySaved = true;
-
-      // Step 5: update in-memory ref
-      dmKeyPairRef.current = newPair;
-
-      // Step 6: register new public key on the server (password required to override existing key)
-      // CRYPTO-005: prevents stolen-session MITM attacks.
-      await api.registerPublicKey(pubJwk, password); // throws on network/server error
-
-      // Step 7: flush cached AES-GCM keys so they are re-derived from the new private key
-      clearAllDmKeys();
-      // BUG 3: mirror handleSyncDmKey — clear stale decrypted DM messages after rotation
-      setDmMsgLoaded({});
-      setDmMessages({});
-
-      // Step 8: upload new backup blob so other devices can restore the rotated key.
-      // CRYPTO-014: without this, any device synced before rotation retains the old key.
-      if (privJwkForBackup && password) {
-        try {
-          // Chain the outgoing key (and its predecessors) into the new backup.
-          // The old private key in IDB is non-extractable, so the previous backup
-          // blob is the only recoverable copy — without chaining, rotating then
-          // logging out anywhere makes pre-rotation messages permanently unreadable.
-          let historyJwks: JsonWebKey[] = [];
-          try {
-            const { backup: oldBlob } = await api.getDmKeyBackup(password, user?.authKdfSalt ?? null);
-            if (oldBlob) {
-              const old = await decryptDmKeyBackupJwks(oldBlob, password);
-              if (old) historyJwks = [old.priv, ...old.history];
-            }
-          } catch { /* no old backup to chain — non-fatal */ }
-          const blob = await encryptDmKeyBackup(privJwkForBackup, password, historyJwks);
-          await api.putDmKeyBackup(blob);
-        } catch {
-          // BUG 4: surface backup failure instead of swallowing it silently
-          setDmBackupOutOfSync(true);
-        }
-      }
-    } catch (err) {
-      // If the new key was never saved, re-enable keys so the user is not locked out
-      // (the old key pair is still valid — either in IDB or now in archive history).
-      // If it was saved but server registration failed, the user should retry rotation.
-      if (!newKeySaved) {
-        // Old key pair still intact — restore dmKeysReady so the user can still use DMs
-        setDmKeysReady(true);
-      }
-      throw err;
-    } finally {
-      rotatingRef.current = false;
-      // Only restore dmKeysReady here if the new key was saved successfully
-      if (newKeySaved) {
-        setDmKeysReady(true);
-      }
-    }
   }
 
   async function handleSetDnd(hours: number) {

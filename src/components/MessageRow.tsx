@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { createPortal } from 'react-dom';
 import { Avatar } from './Avatar';
 import { MarkdownContent } from './MarkdownContent';
-import { EmojiPicker } from './EmojiPicker';
+import { EmojiPicker } from './EmojiPickerLazy';
+import { AttachmentView } from './AttachmentView';
 import { userColor } from '../lib/colors';
 import { TEXT_CLASS, ROW_CLASS, triggerParticles } from '../lib/messageAnimations';
 import type { DecodedMessage, Member } from '../types';
@@ -251,104 +252,6 @@ function SparkPickerPortal({
   );
 }
 
-// ── URL safety guard — prevents javascript: and data: URIs from server-supplied URLs ──
-// Server returns relative /uploads/ paths; these are safe (no XSS vector) and must be
-// allowed through so img/video/audio src and anchor href resolve correctly in the browser.
-function isSafeUrl(url: string | null | undefined): boolean {
-  if (!url) return false;
-  // Relative /uploads/ paths are server-stored files — safe to use directly
-  if (url.startsWith('/uploads/')) return true;
-  try {
-    const u = new URL(url);
-    return u.protocol === 'https:' || u.protocol === 'http:';
-  } catch {
-    return false;
-  }
-}
-
-// ── File attachment renderer ──────────────────────────────────────────────────
-function fmtBytes(b: number): string {
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function FileAttachmentView({ url, name, size, type }: { url: string; name: string; size: number; type: string }) {
-  const isImage = type.startsWith('image/');
-  const isVideo = type.startsWith('video/');
-  const isAudio = type.startsWith('audio/');
-
-  if (isImage) {
-    return (
-      <a href={isSafeUrl(url) ? url : '#'} target="_blank" rel="noopener noreferrer" className="block mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06] hover:border-white/10 transition-colors">
-        <img src={isSafeUrl(url) ? url : undefined} alt={name} className="w-full max-h-64 object-contain bg-black/20" loading="lazy" />
-        <div className="px-2.5 py-1.5 bg-ink-800/60 flex items-center gap-2">
-          <span className="text-[11px] text-ink-300 truncate flex-1">{name}</span>
-          <span className="text-[10px] text-ink-500 shrink-0">{fmtBytes(size)}</span>
-        </div>
-      </a>
-    );
-  }
-
-  if (isVideo) {
-    return (
-      <div className="mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06]">
-        <video
-          src={isSafeUrl(url) ? url : undefined}
-          controls
-          preload="metadata"
-          className="w-full max-h-64 bg-black"
-          style={{ display: 'block' }}
-        />
-        <div className="px-2.5 py-1.5 bg-ink-800/60 flex items-center gap-2">
-          <span className="text-[11px] text-ink-300 truncate flex-1">{name}</span>
-          <span className="text-[10px] text-ink-500 shrink-0">{fmtBytes(size)}</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (isAudio) {
-    return (
-      <div className="mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06] bg-ink-800/60 px-3 py-2.5">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-lg">🎵</span>
-          <div className="min-w-0">
-            <p className="text-[12px] font-medium text-ink-100 truncate">{name}</p>
-            <p className="text-[10px] text-ink-400">{fmtBytes(size)}</p>
-          </div>
-        </div>
-        <audio src={isSafeUrl(url) ? url : undefined} controls preload="metadata" className="w-full h-8" style={{ display: 'block' }} />
-      </div>
-    );
-  }
-
-  // Generic file card — PDF, text, zip, etc.
-  const icon = type === 'application/pdf' ? '📄'
-    : type.includes('zip') ? '🗜️'
-    : type.startsWith('text/') ? '📝'
-    : '📎';
-
-  return (
-    <a
-      href={isSafeUrl(url) ? url : '#'}
-      download={name}
-      className="mt-1.5 flex items-center gap-3 max-w-sm rounded-xl border border-white/[0.06] bg-ink-800/60 px-3 py-2.5 hover:bg-ink-700/60 hover:border-white/10 transition-colors"
-    >
-      <span className="text-2xl shrink-0">{icon}</span>
-      <div className="min-w-0 flex-1">
-        <p className="text-[12px] font-medium text-ink-100 truncate">{name}</p>
-        <p className="text-[10px] text-ink-400">{fmtBytes(size)}</p>
-      </div>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-ink-400 shrink-0">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-        <polyline points="7 10 12 15 17 10"/>
-        <line x1="12" y1="15" x2="12" y2="3"/>
-      </svg>
-    </a>
-  );
-}
-
 export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, onReaction, onReport, onReply, onClickUser, onSpark, members, meId, sparksBalance }: Props) {
   const name = sender?.displayName ?? sender?.username ?? 'unknown';
   const c = userColor(sender?.id ?? msg.senderId, isSelf);
@@ -584,7 +487,7 @@ export function MessageRow({ msg, sender, showHeader, isSelf, onDelete, onEdit, 
 
         {/* File attachment */}
         {!editing && msg.fileUrl && (
-          <FileAttachmentView
+          <AttachmentView
             url={msg.fileUrl}
             name={msg.fileName ?? 'file'}
             size={msg.fileSize ?? 0}

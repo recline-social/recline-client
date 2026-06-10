@@ -2,25 +2,11 @@ import { useLayoutEffect, useRef, useState, useEffect, useCallback } from 'react
 import { createPortal } from 'react-dom';
 import { Avatar } from './Avatar';
 import { MarkdownContent } from './MarkdownContent';
-import { EmojiPicker } from './EmojiPicker';
+import { EmojiPicker } from './EmojiPickerLazy';
 import { userColor } from '../lib/colors';
 import type { DmChannel, DmMessage, DmCallState, User } from '../types';
 import { api } from '../lib/api';
-
-// ── URL safety guard — prevents javascript: and data: URIs from server-supplied URLs ──
-// Server returns relative /uploads/ paths; these are safe (no XSS vector) and must be
-// allowed through so img/video/audio src and anchor href resolve correctly in the browser.
-function isSafeUrl(url: string | null | undefined): boolean {
-  if (!url) return false;
-  // Relative /uploads/ paths are server-stored files — safe to use directly
-  if (url.startsWith('/uploads/')) return true;
-  try {
-    const u = new URL(url);
-    return u.protocol === 'https:' || u.protocol === 'http:';
-  } catch {
-    return false;
-  }
-}
+import { AttachmentView } from './AttachmentView';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function fmtTime(ts: number): string {
@@ -67,75 +53,6 @@ function fileIcon(type: string | null | undefined): string {
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '✅'];
 const GROUP_GAP_MS = 5 * 60 * 1000; // 5 min — same sender within this window = no header
-
-// ── File attachment ───────────────────────────────────────────────────────────
-function FileAttachmentView({ fileUrl, fileName, fileSize, fileType }: {
-  fileUrl: string;
-  fileName: string | null | undefined;
-  fileSize: number | null | undefined;
-  fileType: string | null | undefined;
-}) {
-  const isImage = fileType?.startsWith('image/');
-  const isVideo = fileType?.startsWith('video/');
-  const isAudio = fileType?.startsWith('audio/');
-
-  if (isImage) {
-    return (
-      <a href={isSafeUrl(fileUrl) ? fileUrl : '#'} target="_blank" rel="noopener noreferrer"
-        className="block mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06] hover:border-white/10 transition-colors">
-        <img src={isSafeUrl(fileUrl) ? fileUrl : undefined} alt={fileName ?? 'image'}
-          className="w-full max-h-64 object-contain bg-black/20" loading="lazy"
-          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
-        <div className="px-2.5 py-1.5 bg-ink-800/60 flex items-center gap-2">
-          <span className="text-[11px] text-ink-300 truncate flex-1">{fileName}</span>
-          {fileSize && <span className="text-[10px] text-ink-500 shrink-0">{fmtBytes(fileSize)}</span>}
-        </div>
-      </a>
-    );
-  }
-
-  if (isVideo) {
-    return (
-      <div className="mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06]">
-        <video src={isSafeUrl(fileUrl) ? fileUrl : undefined} controls preload="metadata" className="w-full max-h-64 bg-black" style={{ display: 'block' }} />
-        <div className="px-2.5 py-1.5 bg-ink-800/60 flex items-center gap-2">
-          <span className="text-[11px] text-ink-300 truncate flex-1">{fileName}</span>
-          {fileSize && <span className="text-[10px] text-ink-500 shrink-0">{fmtBytes(fileSize)}</span>}
-        </div>
-      </div>
-    );
-  }
-
-  if (isAudio) {
-    return (
-      <div className="mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06] bg-ink-800/60 px-3 py-2.5">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-lg">🎵</span>
-          <div className="min-w-0">
-            <p className="text-[12px] font-medium text-ink-100 truncate">{fileName ?? 'Audio'}</p>
-            {fileSize && <p className="text-[10px] text-ink-400">{fmtBytes(fileSize)}</p>}
-          </div>
-        </div>
-        <audio src={isSafeUrl(fileUrl) ? fileUrl : undefined} controls preload="metadata" className="w-full h-8" style={{ display: 'block' }} />
-      </div>
-    );
-  }
-
-  return (
-    <a href={isSafeUrl(fileUrl) ? fileUrl : '#'} target="_blank" rel="noopener noreferrer"
-      className="mt-1.5 flex items-center gap-3 max-w-sm rounded-xl border border-white/[0.06] bg-ink-800/60 px-3 py-2.5 hover:bg-ink-700/60 hover:border-white/10 transition-colors">
-      <span className="text-2xl shrink-0">{fileIcon(fileType)}</span>
-      <div className="min-w-0 flex-1">
-        <p className="text-[12px] font-medium text-ink-100 truncate">{fileName ?? 'File'}</p>
-        {fileSize && <p className="text-[10px] text-ink-400">{fmtBytes(fileSize)}</p>}
-      </div>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-ink-400 shrink-0">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-        <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-      </svg>
-    </a>
-  );
-}
 
 // ── DM Call Bar ───────────────────────────────────────────────────────────────
 function DmCallBar({ call }: { call: DmCallState }) {
@@ -353,7 +270,12 @@ function DmMessageRow({ msg, dm, me, showHeader, onReact, onReply, onEdit, onDel
 
         {/* File attachment */}
         {!editing && msg.fileUrl && (
-          <FileAttachmentView fileUrl={msg.fileUrl} fileName={msg.fileName} fileSize={msg.fileSize} fileType={msg.fileType} />
+          <AttachmentView
+            url={msg.fileUrl}
+            name={msg.fileName ?? 'file'}
+            size={msg.fileSize ?? 0}
+            type={msg.fileType ?? ''}
+          />
         )}
 
         {/* Reactions */}
@@ -510,7 +432,8 @@ export function DmView({
   const [clearError, setClearError] = useState<string | null>(null);
   // Reply state
   const [replyingTo, setReplyingTo] = useState<DmMessage | null>(null);
-  // File attachment
+  // File attachment — E2EF-001: k/iv are the attachment's AES-GCM key material,
+  // fileName/fileSize/fileType are the REAL values (server only saw ciphertext).
   const [attachedFile, setAttachedFile] = useState<{ fileUrl: string; fileName: string; fileSize: number; fileType: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -623,7 +546,7 @@ export function DmView({
     setUploadProgress(0);
     try {
       const result = await api.uploadFile(file, (pct) => setUploadProgress(pct));
-      setAttachedFile({ fileUrl: result.url, fileName: result.name, fileSize: file.size, fileType: file.type });
+      setAttachedFile({ fileUrl: result.url, fileName: result.name, fileSize: result.size, fileType: result.type });
     } catch (err: any) {
       setSendError(err?.message ?? 'Upload failed');
     } finally {
@@ -900,7 +823,7 @@ export function DmView({
         ) : (
           <div className="text-[10px] mt-1 px-1">
             {isEncrypted
-              ? <span className="text-emerald-500/70">ECDH P-256 + HKDF-SHA256 + AES-GCM-256 · text is E2E encrypted · file attachments are not</span>
+              ? <span className="text-emerald-500/70">ECDH P-256 + HKDF-SHA256 + AES-GCM-256 · messages and file attachments are E2E encrypted</span>
               : <span className="text-amber-500/70">Waiting for peer to register encryption key</span>}
           </div>
         )}
