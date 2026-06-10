@@ -37,6 +37,7 @@ import {
   clearAllDmKeys,
 } from './lib/crypto';
 import { useDmKeys } from './hooks/useDmKeys';
+import { useUpdater } from './hooks/useUpdater';
 import { unwrapAttachmentEnvelope } from './lib/attachmentCrypto';
 import { CallManager, type PeerSnapshot } from './lib/webrtc';
 import { playCallSound } from './lib/callSounds';
@@ -103,6 +104,68 @@ type ChannelState = {
   loaded: boolean;
   hasMore?: boolean; // true when the last fetch returned a full page → older messages likely exist
 };
+
+// ── Desktop auto-update toast ─────────────────────────────────────────────────
+function UpdateToast({
+  version,
+  installing,
+  onApply,
+  onDismiss,
+}: {
+  version: string | null;
+  installing: boolean;
+  onApply: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      className="fixed bottom-6 right-6 z-50 flex items-start gap-3 rounded-2xl p-4 max-w-xs"
+      style={{
+        background: 'linear-gradient(135deg, rgba(13,13,22,0.98) 0%, rgba(10,22,18,0.98) 100%)',
+        border: '1px solid rgba(52,211,153,0.32)',
+        boxShadow: '0 0 0 1px rgba(52,211,153,0.07), 0 24px 64px rgba(0,0,0,0.7)',
+      }}
+    >
+      <div
+        className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-base select-none"
+        style={{
+          background: 'linear-gradient(135deg, rgba(52,211,153,0.2), rgba(16,185,129,0.12))',
+          border: '1px solid rgba(52,211,153,0.28)',
+          color: '#34d399',
+        }}
+      >
+        ↑
+      </div>
+      <div className="min-w-0 flex-1 pt-0.5">
+        <div className="text-sm font-semibold text-white/90 tracking-tight">
+          Update ready{version ? ` — v${version}` : ''}
+        </div>
+        <div className="text-[11px] text-white/45 mt-0.5 leading-relaxed">
+          Restart Recline to apply the latest version.
+        </div>
+        <button
+          onClick={onApply}
+          disabled={installing}
+          className="mt-2 text-xs font-semibold px-3 py-1 rounded-lg transition-colors"
+          style={{
+            background: 'rgba(52,211,153,0.18)',
+            color: '#34d399',
+            border: '1px solid rgba(52,211,153,0.28)',
+          }}
+        >
+          {installing ? 'Restarting…' : 'Restart now'}
+        </button>
+      </div>
+      <button
+        onClick={onDismiss}
+        className="text-white/25 hover:text-white/55 transition-colors shrink-0 leading-none text-xl mt-0.5"
+        aria-label="Dismiss"
+      >
+        ×
+      </button>
+    </div>
+  );
+}
 
 // ── Founding Supporter celebration toast ──────────────────────────────────────
 // Only shown when ?supporter=1 is in the URL AND the API confirms the payment.
@@ -458,6 +521,11 @@ export default function App() {
     handleSyncDmKey,
     handleRotateKey,
   } = useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, setDmMsgLoaded });
+
+  // ── Desktop auto-updater (Tauri only — no-op in browser/Capacitor) ──────────
+  const { available: updateAvailable, version: updateVersion, installing: updateInstalling, applyUpdate } = useUpdater();
+  const [showUpdateToast, setShowUpdateToast] = useState(false);
+  useEffect(() => { if (updateAvailable) setShowUpdateToast(true); }, [updateAvailable]);
 
   const socketRef = useRef<Socket | null>(null);
   // Guard against concurrent unlock attempts (user double-clicking the unlock button)
@@ -3610,6 +3678,14 @@ export default function App() {
         queue={broadcastQueue}
         onDequeue={() => setBroadcastQueue((prev) => prev.slice(1))}
       />
+      {showUpdateToast && (
+        <UpdateToast
+          version={updateVersion}
+          installing={updateInstalling}
+          onApply={applyUpdate}
+          onDismiss={() => setShowUpdateToast(false)}
+        />
+      )}
       {showSupporterToast && (
         <SupporterToast onDismiss={() => setShowSupporterToast(false)} />
       )}
