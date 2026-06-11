@@ -587,10 +587,23 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
             return;
           }
         }
-      } catch { /* non-fatal — fall through to generate */ }
+      } catch { /* non-fatal */ }
+
+      // Restore failed (no backup on server, corrupt blob, or wrong password).
+      // If the server already has a registered public key, auto-generating a fresh
+      // pair here would silently overwrite it — permanently breaking decryption
+      // of every DM sent to or from this account. Block and surface the state so
+      // the user can either sync from another device or explicitly choose to reset.
+      if (serverKeyJwk !== null) {
+        setDmKeyMismatch(true);
+        setDmBackupOutOfSync(true);
+        // dmKeysReady stays false — DMs are inaccessible until this is resolved.
+        return;
+      }
     }
 
-    // Generate a fresh key pair — either first-ever login or no backup available.
+    // Generate a fresh key pair — server has no key, or we have no password (page
+    // refresh on a new device) so no restore was possible.
     pair = await generateDmKeyPair();
     // Set the ref BEFORE any persistence/network step — an IndexedDB write
     // failure must degrade to an in-memory key, never to "no key at all"
@@ -619,7 +632,9 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       }
     } catch (err) {
       console.error('[setupDmKeys] registerPublicKey failed:', err);
-      // Still mark keys ready so the user is not blocked from the DM UI.
+      // Key exists in memory but the server doesn't know about it — peers can't
+      // derive the shared secret. Flag mismatch so the UI prompts a retry or re-login.
+      setDmKeyMismatch(true);
     }
     setDmKeysReady(true);
     if (password) {
@@ -714,12 +729,15 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
           // The old private key in IDB is non-extractable, so the previous backup
           // blob is the only recoverable copy — without chaining, rotating then
           // logging out anywhere makes pre-rotation messages permanently unreadable.
+          // Use the same preservedHistory() helper as the normal-login path so
+          // the deduplication logic is consistent and duplicate epochs can't
+          // accumulate across multiple rotation+backup cycles.
           let historyJwks: JsonWebKey[] = [];
           try {
             const { backup: oldBlob } = await api.getDmKeyBackup(password, user?.authKdfSalt ?? null);
             if (oldBlob) {
               const old = await decryptDmKeyBackupJwks(oldBlob, password);
-              if (old) historyJwks = [old.priv, ...old.history];
+              if (old) historyJwks = preservedHistory(old, JSON.parse(pubJwk) as JsonWebKey);
             }
           } catch { /* no old backup to chain — non-fatal */ }
           const blob = await encryptDmKeyBackup(privJwkForBackup, password, historyJwks);
