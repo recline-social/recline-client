@@ -1331,18 +1331,15 @@ export default function App() {
       }).catch(() => {});
     };
 
-    // friendship:incoming — server sends the requester's user ID as `id`
-    // TODO: ask server to also send `username` in this event so we can populate it correctly.
-    const onFriendshipIncoming = (data: { id: string; username?: string; displayName: string; avatarUrl?: string | null }) => {
+    const onFriendshipIncoming = (data: { id: string; friendshipId: string; username: string; displayName: string; avatarUrl?: string | null }) => {
       setFriends(prev => {
-        // data.id is the requester's userId — deduplicate by userId
         if (prev.some(f => f.userId === data.id)) return prev;
         return [...prev, {
-          id: `incoming:${data.id}`, // placeholder row ID until a full refresh
+          id: data.friendshipId,       // real friendship row ID — used directly in PATCH /api/friends/:id
           status: 'pending' as const,
           direction: 'incoming' as const,
           userId: data.id,
-          username: data.username ?? data.displayName, // prefer real username, fall back to displayName
+          username: data.username,
           displayName: data.displayName,
           avatarUrl: data.avatarUrl ?? null,
         }];
