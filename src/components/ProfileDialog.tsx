@@ -19,6 +19,7 @@ type Props = {
   onUpdated: (user: User) => void;
   onRotateKey: (password: string) => Promise<void>;
   onSyncKey: (password: string) => Promise<void>;
+  onResetDmKey: (password: string) => Promise<void>;
   isSupporter?: boolean;
   sparksBalance?: number;
   onSparksUpdate?: (balance: number) => void;
@@ -799,6 +800,7 @@ function SecurityTab({
   onUpdated,
   onRotateKey,
   onSyncKey,
+  onResetDmKey,
   onRevokeOtherSessions,
   onExportData,
   onDeleteAccount,
@@ -809,13 +811,14 @@ function SecurityTab({
   onUpdated: (user: User) => void;
   onRotateKey: (password: string) => Promise<void>;
   onSyncKey: (password: string) => Promise<void>;
+  onResetDmKey: (password: string) => Promise<void>;
   onRevokeOtherSessions: () => void;
   onExportData: () => void;
   onDeleteAccount: (password: string) => void;
   dmBackupOutOfSync?: boolean;
   myFingerprint?: string;
 }) {
-  type Panel = 'idle' | 'totp-setup' | 'totp-disable' | 'regen-codes' | 'rotate-key' | 'sync-key';
+  type Panel = 'idle' | 'totp-setup' | 'totp-disable' | 'regen-codes' | 'rotate-key' | 'sync-key' | 'reset-key';
   const [panel, setPanel] = useState<Panel>('idle');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
@@ -874,6 +877,10 @@ function SecurityTab({
 
   if (panel === 'sync-key') {
     return <SyncKeyPanel onDone={() => setPanel('idle')} onCancel={() => setPanel('idle')} onSync={onSyncKey} />;
+  }
+
+  if (panel === 'reset-key') {
+    return <ResetKeyPanel onDone={() => setPanel('idle')} onCancel={() => setPanel('idle')} onReset={onResetDmKey} />;
   }
 
   return (
@@ -1031,6 +1038,20 @@ function SecurityTab({
           </button>
         </div>
 
+        {/* Reset DM key */}
+        <div className="mb-4">
+          <p className="text-xs text-zinc-500 mb-2">
+            Generate a new encryption key and discard the current one. Old direct messages that
+            haven't been decrypted on this device will become permanently unreadable.
+          </p>
+          <button
+            onClick={() => setPanel('reset-key')}
+            className="px-4 py-2 rounded-md text-sm bg-red-900/60 hover:bg-red-800 text-red-200"
+          >
+            Reset DM key
+          </button>
+        </div>
+
         {/* Delete account */}
         <div>
           <p className="text-xs text-zinc-500 mb-2">
@@ -1136,6 +1157,105 @@ function SyncKeyPanel({
         <button onClick={onCancel} className="btn-ghost flex-1 !py-2 text-xs">Cancel</button>
         <button onClick={handleSync} disabled={loading || !password} className="btn-primary flex-1 !py-2 text-xs">
           {loading ? 'Syncing…' : 'Sync key'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── ResetKeyPanel ─────────────────────────────────────────────────────────────
+function ResetKeyPanel({
+  onDone,
+  onCancel,
+  onReset,
+}: {
+  onDone: () => void;
+  onCancel: () => void;
+  onReset: (password: string) => Promise<void>;
+}) {
+  const [password, setPassword] = useState('');
+  const [confirmed, setConfirmed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function handleReset() {
+    if (!password || !confirmed) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await onReset(password);
+      setDone(true);
+      setTimeout(onDone, 1200);
+    } catch (e: any) {
+      setError(e?.message ?? 'Reset failed — check your password and try again');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (done) {
+    return (
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-ink-100">Reset DM key</h3>
+        <p className="text-[12px] text-emerald-400">New encryption key active. Old messages on this device may no longer decrypt.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold text-ink-100">Reset DM key</h3>
+      <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-xl bg-red-900/30 border border-red-800/40">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="mt-0.5 shrink-0 text-red-400">
+          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        <p className="text-[11px] text-red-300/90 leading-relaxed">
+          This generates a brand-new ECDH key pair and discards the current one.
+          Any direct messages encrypted to your previous key that haven't already been
+          decrypted on this device will become <strong>permanently unreadable</strong> — there is no undo.
+          Use this only if your key is hopelessly out of sync and "Sync from account" hasn't helped.
+        </p>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-ink-400">Confirm your password</label>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Current password"
+          className="input w-full text-sm"
+          autoComplete="current-password"
+          onKeyDown={(e) => e.key === 'Enter' && confirmed && handleReset()}
+          autoFocus
+        />
+      </div>
+      <label className="flex items-center gap-2 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={confirmed}
+          onChange={(e) => setConfirmed(e.target.checked)}
+          className="w-4 h-4 rounded border-white/20 bg-ink-800 accent-rose-500 cursor-pointer"
+        />
+        <span className="text-xs text-ink-300">I understand — old DMs that haven't decrypted here will be gone forever</span>
+      </label>
+      {error && (
+        <div className="text-rose-300 text-xs bg-rose-900/30 border border-rose-900/40 rounded-lg px-3 py-2">
+          {error}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <button type="button" className="btn-ghost flex-1" onClick={onCancel}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn-primary flex-1 !bg-red-700/80 hover:!bg-red-700"
+          disabled={loading || !confirmed || !password}
+          onClick={handleReset}
+        >
+          {loading ? 'Resetting…' : 'Reset key'}
         </button>
       </div>
     </div>
@@ -1528,7 +1648,7 @@ function SparksTab({ balance, onSparksUpdate }: { balance: number; onSparksUpdat
 }
 
 // ── Shell ─────────────────────────────────────────────────────────────────────
-export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, onSyncKey, isSupporter, sparksBalance, onSparksUpdate, initialTab, onSetDnd, onRevokeOtherSessions, onExportData, onDeleteAccount, dmBackupOutOfSync, myFingerprint }: Props) {
+export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, onSyncKey, onResetDmKey, isSupporter, sparksBalance, onSparksUpdate, initialTab, onSetDnd, onRevokeOtherSessions, onExportData, onDeleteAccount, dmBackupOutOfSync, myFingerprint }: Props) {
   const [tab, setTab] = useState<Tab>('profile');
 
   useEffect(() => {
@@ -1569,6 +1689,7 @@ export function ProfileDialog({ open, onClose, me, onUpdated, onRotateKey, onSyn
           onUpdated={onUpdated}
           onRotateKey={onRotateKey}
           onSyncKey={onSyncKey}
+          onResetDmKey={onResetDmKey}
           onRevokeOtherSessions={onRevokeOtherSessions}
           onExportData={onExportData}
           onDeleteAccount={onDeleteAccount}

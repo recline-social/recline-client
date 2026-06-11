@@ -420,10 +420,15 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     // By comparing first we avoid blindly attempting a PUT that would 400 — eliminating
     // the persistent 400 loop that appears in the network tab on every page refresh.
     let serverKeyJwk: string | null = null;
+    let serverKeyFetchFailed = false;
     try {
       const { publicKey } = await api.getMyPublicKey();
       serverKeyJwk = publicKey;
-    } catch { /* non-fatal — treat as unknown server state, proceed normally */ }
+    } catch {
+      // Network error — keep serverKeyFetchFailed so downstream checks can distinguish
+      // "server confirmed no key" from "couldn't reach server" (Fix 4).
+      serverKeyFetchFailed = true;
+    }
 
     let pair = await loadDmKeyPair();
 
@@ -485,7 +490,9 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       }
 
       // ── Case 2: server has no key yet — first-time registration ──────────
-      if (serverKeyJwk === null) {
+      // Guard: only enter when the fetch succeeded and positively confirmed no key.
+      // A fetch failure must not trigger unprotected registration (Fix 4).
+      if (serverKeyJwk === null && !serverKeyFetchFailed) {
         await api.registerPublicKey(localJwk).catch(() => {});
         setDmKeyMismatch(false);
         dmKeyPairRef.current = pair;
@@ -524,14 +531,19 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
 
         if (restored) {
           const restoredJwk = await exportPublicKeyJwk(restored.publicKey);
-          // Persistence failure must not block using the key this session.
+          // Fix 3: if the backup key doesn't match the server's current key, the backup
+          // is stale — another device has rotated since this snapshot was made. Registering
+          // an older key over the current server key would permanently break messages already
+          // encrypted to the newer one. Surface the conflict instead of silently overwriting.
+          if (!jwkPointMatches(restoredJwk, serverKeyJwk)) {
+            setDmKeyMismatch(true);
+            setDmBackupOutOfSync(true);
+            return;
+          }
+          // Backup matches server key — restore locally, no re-registration needed.
           await saveDmKeyPair(restored).catch((err) =>
             console.error('[setupDmKeys] could not persist restored key (continuing in-memory):', err));
           pair = restored;
-          // If the restored key already matches the server key, no re-registration needed.
-          if (!jwkPointMatches(restoredJwk, serverKeyJwk)) {
-            await api.registerPublicKey(restoredJwk, { password, authKdfSalt }).catch(() => {});
-          }
           dmKeyPairRef.current = pair;
           setDmKeyMismatch(false);
           setDmKeysReady(true);
@@ -539,22 +551,12 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
           return;
         }
 
-        // Priority 2: force-register local key with password + upload fresh backup.
-        await api.registerPublicKey(localJwk, { password, authKdfSalt }).catch((err) => {
-          console.error('[DM keys] Failed to re-register local key:', err);
-          throw err;
-        });
-        dmKeyPairRef.current = pair;
-        setDmKeyMismatch(false);
-        setDmKeysReady(true);
-        setDmMsgLoaded({});
-        try {
-          const privJwk = await exportPrivateKeyJwk(pair.privateKey);
-          if (privJwk) {
-            const blob = await encryptDmKeyBackup(privJwk, password);
-            await api.putDmKeyBackup(blob);
-          }
-        } catch { /* non-fatal */ }
+        // Backup restore failed — don't blindly overwrite the server's current key.
+        // It may be newer (from another device's rotation); pushing the local key back
+        // would permanently break messages encrypted to that newer key.
+        // Surface the conflict so the user can sync from another device or explicitly reset.
+        setDmKeyMismatch(true);
+        setDmBackupOutOfSync(true);
         return;
       }
 
@@ -575,15 +577,25 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
         if (backup) {
           const restored = await decryptDmKeyBackup(backup, password);
           if (restored) {
+            const restoredJwk = await exportPublicKeyJwk(restored.publicKey);
+            // Fix 3 (no-local-key path): same guard as Case 3 — don't register a backup key
+            // that doesn't match the server's current key. Another device may have rotated
+            // after this backup was made; pushing the older key back would break those messages.
+            // Restore locally (better than nothing) but flag the mismatch for the user to resolve.
+            if (!jwkPointMatches(restoredJwk, serverKeyJwk)) {
+              await saveDmKeyPair(restored);
+              dmKeyPairRef.current = restored;
+              setDmKeysReady(true);
+              setDmMsgLoaded({});
+              setDmKeyMismatch(true);
+              setDmBackupOutOfSync(true);
+              return;
+            }
             await saveDmKeyPair(restored);
             dmKeyPairRef.current = restored;
             setDmKeyMismatch(false);
             setDmKeysReady(true);
             setDmMsgLoaded({});
-            const restoredJwk = await exportPublicKeyJwk(restored.publicKey);
-            if (!jwkPointMatches(restoredJwk, serverKeyJwk)) {
-              await api.registerPublicKey(restoredJwk, { password, authKdfSalt }).catch(() => {});
-            }
             return;
           }
         }
@@ -594,7 +606,9 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       // pair here would silently overwrite it — permanently breaking decryption
       // of every DM sent to or from this account. Block and surface the state so
       // the user can either sync from another device or explicitly choose to reset.
-      if (serverKeyJwk !== null) {
+      // Also guard on serverKeyFetchFailed — a transient network error must not be
+      // treated as a confirmed-empty server (Fix 4).
+      if (serverKeyJwk !== null || serverKeyFetchFailed) {
         setDmKeyMismatch(true);
         setDmBackupOutOfSync(true);
         // dmKeysReady stays false — DMs are inaccessible until this is resolved.
@@ -602,8 +616,18 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       }
     }
 
-    // Generate a fresh key pair — server has no key, or we have no password (page
-    // refresh on a new device) so no restore was possible.
+    // Fix 1 / Fix 4: don't auto-generate when we can't confirm the server is empty
+    // and we lack credentials to safely override any existing key.
+    //   • !password && serverKeyJwk !== null  → server confirmed has a key; no creds to override
+    //   • !password && serverKeyFetchFailed   → couldn't reach server; can't assume empty
+    if (!password && (serverKeyJwk !== null || serverKeyFetchFailed)) {
+      setDmKeyMismatch(true);
+      // dmKeysReady stays false — user must log in with password to reconcile.
+      return;
+    }
+
+    // Generate a fresh key pair — safe to proceed: either the server is confirmed empty,
+    // or we have a password to authorize the override.
     pair = await generateDmKeyPair();
     // Set the ref BEFORE any persistence/network step — an IndexedDB write
     // failure must degrade to an in-memory key, never to "no key at all"
@@ -617,8 +641,8 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     // has the public key before we start sending/receiving DMs.  Use try/catch
     // so a network error is visible in the console but never blocks the user.
     try {
-      if (serverKeyJwk === null) {
-        // Server has no key — register freely (no password needed).
+      if (serverKeyJwk === null && !serverKeyFetchFailed) {
+        // Server confirmed has no key — register freely (no password needed).
         await api.registerPublicKey(freshJwk);
         setDmKeyMismatch(false);
       } else if (password) {
@@ -658,16 +682,42 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     if (!backup) throw new Error('No key backup found on server. Log in on your other device first.');
     const restored = await decryptDmKeyBackup(backup, password);
     if (!restored) throw new Error('Wrong password or corrupted backup.');
+    const pubJwk = await exportPublicKeyJwk(restored.publicKey);
+
+    // Fix 3b: verify the backup key matches the server's current key before restoring.
+    // If another device rotated after this backup was made, the backup is stale —
+    // registering it would push an older key back and break messages already
+    // encrypted to the newer key.
+    let currentServerKey: string | null = null;
+    let syncServerFetchFailed = false;
+    try {
+      const { publicKey } = await api.getMyPublicKey();
+      currentServerKey = publicKey;
+    } catch {
+      syncServerFetchFailed = true;
+    }
+    if (!syncServerFetchFailed && currentServerKey !== null && !jwkPointMatches(pubJwk, currentServerKey)) {
+      throw new Error(
+        'Backup is outdated — it doesn\'t match the key on the server. ' +
+        'Log in on the device with the current key to refresh the backup, then sync here.',
+      );
+    }
+
     await saveDmKeyPair(restored);
     dmKeyPairRef.current = restored;
     // Flush only the derived AES cache — NOT IndexedDB, which now holds the restored key.
     clearDmAesKeyCache();
     setDmMsgLoaded({});
     setDmMessages({});
-    const pubJwk = await exportPublicKeyJwk(restored.publicKey);
-    await api.registerPublicKey(pubJwk, { password, authKdfSalt: user?.authKdfSalt ?? null }).catch(() => {});
+
+    // Only register when we couldn't confirm the server already holds this exact key
+    // (e.g. server is unreachable, or server confirmed no key — both uncommon in sync flow).
+    if (syncServerFetchFailed || currentServerKey === null) {
+      await api.registerPublicKey(pubJwk, { password, authKdfSalt: user?.authKdfSalt ?? null }).catch(() => {});
+    }
+    // currentServerKey matched pubJwk → server already correct, no registration needed.
+
     setDmKeyMismatch(false);
-    // Clear backup-out-of-sync flag now that sync succeeded
     setDmBackupOutOfSync(false);
     // M-7: Raw password is not cached in sessionStorage.
     // Key pair is already saved to IndexedDB by saveDmKeyPair above — no password cache needed.
@@ -684,6 +734,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     setDmBackupOutOfSync(false);
 
     let newKeySaved = false;
+    let registrationSucceeded = false;
     try {
       // BUG 5 (reordered): safe rotation order:
       // 1. Generate a new key pair (nothing touched yet).
@@ -713,6 +764,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       // Step 6: register new public key on the server (password required to override existing key)
       // CRYPTO-005: prevents stolen-session MITM attacks.
       await api.registerPublicKey(pubJwk, { password, authKdfSalt: user?.authKdfSalt ?? null }); // throws on network/server error
+      registrationSucceeded = true;
 
       // Step 7: flush cached AES-GCM keys so they are re-derived from the new private key.
       // Use the AES-only clear — NOT clearAllDmKeys(), which would wipe the new IDB key pair.
@@ -748,21 +800,73 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
         }
       }
     } catch (err) {
-      // If the new key was never saved, re-enable keys so the user is not locked out
-      // (the old key pair is still valid — either in IDB or now in archive history).
-      // If it was saved but server registration failed, the user should retry rotation.
       if (!newKeySaved) {
-        // Old key pair still intact — restore dmKeysReady so the user can still use DMs
+        // Old key pair still intact (error before IDB write) — restore dmKeysReady
+        // so the user can continue using DMs with the previous key.
         setDmKeysReady(true);
+      } else if (!registrationSucceeded) {
+        // Fix 5: new key saved locally but server registration failed — local/server split.
+        // Peers still encrypt to the old server key; local key is now mismatched.
+        // Flag mismatch so the UI prompts a retry; dmKeysReady stays false.
+        setDmKeyMismatch(true);
       }
       throw err;
     } finally {
       rotatingRef.current = false;
-      // Only restore dmKeysReady here if the new key was saved successfully
-      if (newKeySaved) {
+      // Fix 5: only declare ready when both steps completed — local save AND server registration.
+      // newKeySaved && !registrationSucceeded leaves a local/server split that the mismatch
+      // banner must surface; dmKeysReady must stay false until the user retries rotation.
+      if (newKeySaved && registrationSucceeded) {
         setDmKeysReady(true);
       }
     }
+  }
+
+  /**
+   * Explicitly reset the DM key pair — generates a fresh ECDH key, registers it on the server
+   * (password required to override the existing key), and uploads a new backup.
+   *
+   * ⚠ Destructive: DMs that were encrypted to the previous key and have not yet been decrypted
+   * on this device will become permanently unreadable. This is the intentional escape hatch for
+   * irrecoverable backup-out-of-sync states — called only from the danger-zone UI action.
+   */
+  async function handleResetDmKey(password: string): Promise<void> {
+    setDmKeysReady(false);
+    setDmKeyMismatch(false);
+    setDmBackupOutOfSync(false);
+
+    // Wipe existing local keys (IDB + AES cache) before generating a replacement.
+    await clearAllDmKeys();
+    dmKeyPairRef.current = null;
+    clearDmAesKeyCache();
+
+    const newPair = await generateDmKeyPair();
+    dmKeyPairRef.current = newPair;
+    await saveDmKeyPair(newPair).catch((err) =>
+      console.error('[resetDmKey] could not persist new key (continuing in-memory):', err));
+
+    const freshJwk = await exportPublicKeyJwk(newPair.publicKey);
+
+    // Password-protected registration is mandatory — overrides whatever key the server holds.
+    await api.registerPublicKey(freshJwk, {
+      password,
+      authKdfSalt: user?.authKdfSalt ?? null,
+    });
+
+    // Upload fresh backup — history starts empty (old keys intentionally discarded).
+    const privJwk = await exportPrivateKeyJwk(newPair.privateKey);
+    if (privJwk) {
+      try {
+        const blob = await encryptDmKeyBackup(privJwk, password, []);
+        await api.putDmKeyBackup(blob);
+      } catch { /* non-fatal — user can rotate again to create backup */ }
+    }
+
+    setDmMsgLoaded({});
+    setDmMessages({});
+    setDmKeyMismatch(false);
+    setDmBackupOutOfSync(false);
+    setDmKeysReady(true);
   }
 
   return {
@@ -790,5 +894,6 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     handleAcceptPeerKey,
     handleSyncDmKey,
     handleRotateKey,
+    handleResetDmKey,
   };
 }

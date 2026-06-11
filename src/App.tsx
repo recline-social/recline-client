@@ -520,6 +520,7 @@ export default function App() {
     handleAcceptPeerKey,
     handleSyncDmKey,
     handleRotateKey,
+    handleResetDmKey,
   } = useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, setDmMsgLoaded });
 
   // ── Desktop auto-updater (Tauri only — no-op in browser/Capacitor) ──────────
@@ -3613,6 +3614,7 @@ export default function App() {
         onUpdated={(u) => setUser(u)}
         onRotateKey={handleRotateKey}
         onSyncKey={handleSyncDmKey}
+        onResetDmKey={handleResetDmKey}
         isSupporter={isSupporter}
         sparksBalance={sparksBalance}
         onSparksUpdate={setSparksBalance}
