@@ -25,6 +25,12 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_TURNSTILE_SITE_KEY': JSON.stringify(turnstileSiteKey),
     },
     plugins: [react()],
+    build: {
+      // Datadog RUM profiler ships rest-destructuring syntax that esbuild cannot
+      // downcompile to Vite's default es2020/chrome87 targets. es2022 is natively
+      // supported by every modern browser we care about and avoids the transform.
+      target: 'es2022',
+    },
     server: {
       port: 5173,
       host: true,
