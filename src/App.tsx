@@ -510,6 +510,7 @@ export default function App() {
     peerFingerprints,
     setPeerFingerprints,
     dmKeyPairRef,
+    dmKeyStatusRef,
     setupPasswordRef,
     ensureDmKeys,
     getDmKey,
@@ -2804,6 +2805,15 @@ export default function App() {
         );
       }
     }
+    // Issue 3: dmKeyPairRef existing isn't enough — the key must also be confirmed registered
+    // with the server (send-ready). A mismatch/unregistered key would encrypt to a key the
+    // server doesn't know about, causing permanent decryption failures for the recipient.
+    if (dmKeyStatusRef.current !== 'send-ready') {
+      throw new Error(
+        'Unable to encrypt message — your DM key is not synced with the server. ' +
+        'Go to Profile → Security to sync or reset your DM key.',
+      );
+    }
     const dmChannel = dmsRef.current.find((d) => d.id === dmId);
     const key = dmChannel ? await getDmKey(dmChannel) : null;
     const fileFields = file ? {
@@ -2827,6 +2837,12 @@ export default function App() {
   }
 
   async function editDmMessage(dmId: string, msgId: string, newText: string) {
+    if (dmKeyStatusRef.current !== 'send-ready') {
+      throw new Error(
+        'Unable to encrypt edit — your DM key is not synced with the server. ' +
+        'Go to Profile → Security to sync or reset your DM key.',
+      );
+    }
     const dmChannel = dmsRef.current.find((d) => d.id === dmId);
     const key = dmChannel ? await getDmKey(dmChannel) : null;
     if (!key) throw new Error('DM key not available — cannot edit message');
