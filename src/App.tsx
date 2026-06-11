@@ -705,35 +705,40 @@ export default function App() {
   }, [user?.id]);
 
   /* ------------------------ Stripe tier-activated return ------------------------ */
-  // When Stripe redirects back after a successful checkout, the STRIPE_SUCCESS_URL
-  // includes ?tier_activated=1 so we know to refresh the user's tier status.
+  // When Stripe redirects back after a tier checkout, the success URL now includes
+  // ?tier_activated=1&tier_server=<serverId> (set dynamically in tiers.ts).
+  // We read tier_server directly so the poll works even though activeServerId is
+  // null immediately after a full-page reload from Stripe.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (!params.has('tier_activated')) return;
-    // Strip the param from the URL without a page reload
+
+    const tierServerId = params.get('tier_server');
+
+    // Strip both params from the URL without a page reload
     params.delete('tier_activated');
+    params.delete('tier_server');
     const newSearch = params.toString();
     window.history.replaceState({}, '', newSearch ? `?${newSearch}` : window.location.pathname);
+
+    if (!tierServerId) return; // no server context — nothing to poll
+
+    // Navigate to the server the tier was purchased for
+    setActiveServerId(tierServerId);
+
     // Poll myTier up to 5 times with 2s gaps to catch the webhook landing
     let attempts = 0;
     const poll = setInterval(() => {
       attempts++;
-      // activeServerId may not be set yet — use a ref-based approach via state callback
-      setActiveServerId((sid) => {
-        if (sid) {
-          api.tiers.myTier(sid).then((r) => {
-            setMyTierByServer((prev) => ({ ...prev, [sid]: r }));
-            if (r.tierId || attempts >= 5) {
-              clearInterval(poll);
-              // Reload channels so lock icons clear
-              setChannelsByServer((prev) => { const next = { ...prev }; delete next[sid]; return next; });
-              setTierRequiredChannelId(null);
-            }
-          }).catch(() => { if (attempts >= 5) clearInterval(poll); });
+      api.tiers.myTier(tierServerId).then((r) => {
+        setMyTierByServer((prev) => ({ ...prev, [tierServerId]: r }));
+        if (r.tierId || attempts >= 5) {
+          clearInterval(poll);
+          // Evict cached channel list so lock icons re-evaluate against new tier status
+          setChannelsByServer((prev) => { const next = { ...prev }; delete next[tierServerId]; return next; });
+          setTierRequiredChannelId(null);
         }
-        if (attempts >= 5) clearInterval(poll);
-        return sid;
-      });
+      }).catch(() => { if (attempts >= 5) clearInterval(poll); });
     }, 2000);
     return () => clearInterval(poll);
   // eslint-disable-next-line react-hooks/exhaustive-deps
