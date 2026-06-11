@@ -2945,6 +2945,7 @@ export default function App() {
     try { sessionStorage.removeItem('recline.session.authKey'); } catch {}
     unregisterPushSubscription(); // remove push subscription from server + browser
     dmKeyPairRef.current = null;
+    dmKeyStatusRef.current = 'locked';
     // Clear stale dm typing timers so callbacks don't fire state updates after logout
     Object.values(dmTypingTimers.current).forEach(clearTimeout);
     dmTypingTimers.current = {};

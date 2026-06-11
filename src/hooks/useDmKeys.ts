@@ -775,6 +775,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     setDmMessages({});
     setDmKeyMismatch(false);
     setDmBackupOutOfSync(false);
+    setDmKeysReady(true);
     // M-7: Raw password is not cached in sessionStorage.
   }
 
@@ -782,6 +783,13 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     // BUG 1: concurrent invocation guard
     if (rotatingRef.current) return;
     rotatingRef.current = true;
+
+    // Snapshot pre-rotation state so we can restore it if we fail before saving the new key.
+    // (The old key might be decrypt-only or locked — don't accidentally upgrade it to send-ready.)
+    const prevReady = dmKeysReady;
+    const prevStatus = dmKeyStatusRef.current;
+    const prevMismatch = dmKeyMismatch;
+    const prevBackupOutOfSync = dmBackupOutOfSync;
 
     // BUG 2: mark keys not ready during rotation so concurrent DM ops don't use a half-rotated key
     setDmKeysReady(false);
@@ -857,20 +865,24 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       }
     } catch (err) {
       if (!newKeySaved) {
-        // Old key pair still intact (error before IDB write) — restore dmKeysReady
-        // so the user can continue using DMs with the previous key.
-        dmKeyStatusRef.current = 'send-ready';
-        setDmKeysReady(true);
+        // Old key pair still intact (error before IDB write) — restore the exact pre-rotation
+        // state rather than blindly promoting to send-ready. The old key might have been
+        // decrypt-only or locked before rotation started.
+        setDmKeysReady(prevReady);
+        dmKeyStatusRef.current = prevStatus;
+        setDmKeyMismatch(prevMismatch);
+        setDmBackupOutOfSync(prevBackupOutOfSync);
       } else if (!registrationSucceeded) {
-        // Fix 5: new key saved locally but server registration failed — local/server split.
+        // New key saved locally but server registration failed — local/server split.
         // Peers still encrypt to the old server key; local key is now mismatched.
         // Flag mismatch so the UI prompts a retry; dmKeysReady stays false.
         dmKeyStatusRef.current = 'decrypt-only';
         setDmKeyMismatch(true);
+        setDmKeysReady(false);
       }
-      // else: newKeySaved && registrationSucceeded — some post-registration step failed
-      // (e.g. backup). dmKeyStatusRef stays 'locked' but the finally block will set it
-      // to 'send-ready' because both flags are true.
+      // else: newKeySaved && registrationSucceeded — post-registration step (e.g. backup) failed.
+      // dmKeyStatusRef stays 'locked' but the finally block promotes it to send-ready since
+      // both flags are true (the key IS valid and registered despite the backup issue).
       throw err;
     } finally {
       rotatingRef.current = false;
@@ -927,8 +939,10 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       await wipeDmIdentityKeysForReset();
 
       // Step 4: persist new pair and update in-memory ref.
-      await saveDmKeyPair(newPair).catch((err) =>
-        console.error('[resetDmKey] could not persist new key (continuing in-memory):', err));
+      // Do NOT swallow this error: if IDB write fails after the server accepted the new public
+      // key, the user is in a split state (server knows new key, local has nothing on disk).
+      // The outer catch handles this as a post-registration failure.
+      await saveDmKeyPair(newPair);
       dmKeyPairRef.current = newPair;
       clearDmAesKeyCache();
 
