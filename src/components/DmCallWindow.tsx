@@ -190,15 +190,20 @@ function resolveFocus(focus: DmCallFocus, d: ReturnType<typeof derive>): Exclude
 }
 
 // ── Tile primitives ───────────────────────────────────────────────────────────
+// NOTE: every <video> in this file is muted — peer audio plays exclusively through
+// the dedicated hidden <audio> element in DmCallOverlay. An unmuted peer video
+// (a) doubles the audio (echo, and the volume slider only controls one copy) and
+// (b) is blocked from autoplaying by iOS Safari, leaving the tile permanently black.
 function ScreenTile({ stream, label, self, onFullscreen }: {
   stream: MediaStream | null;
   label: string;
   self: boolean;
   onFullscreen?: () => void;
 }) {
+  void self;
   return (
     <div className="relative rounded-xl overflow-hidden bg-black group" style={{ aspectRatio: '16/9' }}>
-      <video ref={attachStream(stream)} autoPlay playsInline muted={self} className="w-full h-full object-contain bg-black" />
+      <video ref={attachStream(stream)} autoPlay playsInline muted className="w-full h-full object-contain bg-black" />
       <span className="absolute bottom-1.5 left-2 text-[10px] text-white/70 bg-black/50 rounded px-1.5 py-0.5 flex items-center gap-1">
         <IconScreenSmall />
         {label}
@@ -234,7 +239,7 @@ function CamTile({ stream, live, name, userId, avatarUrl, self, speaking, onFull
       {live ? (
         <video
           ref={attachStream(stream)}
-          autoPlay playsInline muted={self}
+          autoPlay playsInline muted
           className={`absolute inset-0 w-full h-full object-cover ${self ? 'scale-x-[-1]' : ''}`}
         />
       ) : (
@@ -438,14 +443,16 @@ export function DmCallDock(props: BaseProps & { onFullscreen: (focus: DmCallFocu
 export function DmCallOverlay(props: BaseProps & {
   fullscreen: boolean;
   focus: DmCallFocus;
-  /** True when the docked panel is on screen (desktop, viewing the call's DM) — hides the pill on md+. */
-  dockVisible: boolean;
+  /** True while the user is viewing the DM this call belongs to — the docked panel
+   *  (desktop) or the DmView call bar (mobile) is the call surface there, so the
+   *  floating pill is suppressed entirely. */
+  viewingCallDm: boolean;
   onSetFullscreen: (v: boolean) => void;
   onSetFocus: (f: DmCallFocus) => void;
 }) {
   const {
     call, myName, myAvatarUrl, myId,
-    fullscreen, focus, dockVisible, onSetFullscreen, onSetFocus,
+    fullscreen, focus, viewingCallDm, onSetFullscreen, onSetFocus,
     onSetPeerVolume, onHangUp,
   } = props;
   const d = derive(call);
@@ -481,9 +488,12 @@ export function DmCallOverlay(props: BaseProps & {
 
   // ── Pill drag (mouse + touch) ──────────────────────────────────────────────
   function startDrag(clientX: number, clientY: number) {
+    // Read the actual on-screen position — the resting spot differs between
+    // mobile (top-right) and desktop (bottom-right), so don't assume either.
+    const rect = pillRef.current?.getBoundingClientRect();
     dragRef.current = {
-      ox: pos?.x ?? (window.innerWidth - (pillRef.current?.offsetWidth ?? 260) - 16),
-      oy: pos?.y ?? (window.innerHeight - (pillRef.current?.offsetHeight ?? 44) - 16),
+      ox: rect?.left ?? 16,
+      oy: rect?.top ?? 16,
       startX: clientX,
       startY: clientY,
     };
@@ -536,7 +546,7 @@ export function DmCallOverlay(props: BaseProps & {
   const renderFocused = () => {
     switch (focused) {
       case 'peer-screen':
-        return <video ref={attachStream(call.peerScreenStream)} autoPlay playsInline className="w-full h-full object-contain bg-black" />;
+        return <video ref={attachStream(call.peerScreenStream)} autoPlay playsInline muted className="w-full h-full object-contain bg-black" />;
       case 'self-screen':
         return (
           <div className="relative w-full h-full">
@@ -546,7 +556,7 @@ export function DmCallOverlay(props: BaseProps & {
         );
       case 'peer-cam':
         return d.peerHasCam ? (
-          <video ref={attachStream(call.peerStream)} autoPlay playsInline className="w-full h-full object-contain bg-black" />
+          <video ref={attachStream(call.peerStream)} autoPlay playsInline muted className="w-full h-full object-contain bg-black" />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center gap-3">
             <div className={`relative rounded-full ${peerSpeaking ? 'ring-4 ring-emerald-400/60' : ''}`}>
@@ -577,7 +587,7 @@ export function DmCallOverlay(props: BaseProps & {
       case 'peer-screen':
         return (
           <div key={t} className={common} onClick={() => onSetFocus(t)} title={`${call.peerName}'s screen`}>
-            <video ref={attachStream(call.peerScreenStream)} autoPlay playsInline className="w-full h-full object-cover" />
+            <video ref={attachStream(call.peerScreenStream)} autoPlay playsInline muted className="w-full h-full object-cover" />
             <span className="absolute bottom-1 left-1.5 text-[9px] text-white/70 bg-black/50 rounded px-1 flex items-center gap-0.5"><IconScreenSmall />{call.peerName}</span>
           </div>
         );
@@ -592,7 +602,7 @@ export function DmCallOverlay(props: BaseProps & {
         return (
           <div key={t} className={`${common} ${peerSpeaking ? 'ring-2 ring-emerald-400/70' : ''}`} onClick={() => onSetFocus(t)} title={call.peerName}>
             {d.peerHasCam ? (
-              <video ref={attachStream(call.peerStream)} autoPlay playsInline className="w-full h-full object-cover" />
+              <video ref={attachStream(call.peerStream)} autoPlay playsInline muted className="w-full h-full object-cover" />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
                 <Avatar name={call.peerName} id={call.peerUserId} size="sm" imageUrl={call.peerAvatarUrl} />
@@ -679,10 +689,11 @@ export function DmCallOverlay(props: BaseProps & {
   );
 
   // ── Floating pill ──────────────────────────────────────────────────────────
+  // Resting position: top-right on phones (bottom-right sits exactly on the
+  // composer's send button — same collision as the old FeedbackButton mistake),
+  // bottom-right on desktop. Dragging switches to explicit coordinates.
   const pillStyle: React.CSSProperties = {
     position: 'fixed',
-    right: pos ? undefined : '16px',
-    bottom: pos ? undefined : '16px',
     left: pos ? `${pos.x}px` : undefined,
     top:  pos ? `${pos.y}px` : undefined,
     zIndex: 180,
@@ -693,7 +704,9 @@ export function DmCallOverlay(props: BaseProps & {
     <div
       ref={pillRef}
       style={pillStyle}
-      className={`bg-[#0F0C14] border border-white/[0.1] rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.8)] overflow-hidden select-none w-max ${dockVisible ? 'md:hidden' : ''}`}
+      className={`bg-[#0F0C14] border border-white/[0.1] rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.8)] overflow-hidden select-none w-max ${
+        pos ? '' : 'top-16 right-3 md:top-auto md:bottom-4 md:right-4'
+      }`}
     >
       <div
         className="flex items-center gap-2 px-3 py-2 cursor-grab active:cursor-grabbing"
@@ -731,7 +744,7 @@ export function DmCallOverlay(props: BaseProps & {
         playsInline
         style={{ display: 'none' }}
       />
-      {fullscreen ? fullscreenView : pillView}
+      {fullscreen ? fullscreenView : viewingCallDm ? null : pillView}
     </>,
     document.body,
   );

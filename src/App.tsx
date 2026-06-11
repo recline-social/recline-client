@@ -3447,6 +3447,9 @@ export default function App() {
               isTyping={!!dmTyping[activeDm.id]}
               call={dmCall?.dmChannelId === activeDm.id ? dmCall : null}
               onCallStart={(hasVideo) => startDmCall(activeDm.id, hasVideo)}
+              onCallOpen={() => setDmCallFullscreen(true)}
+              onCallMute={toggleDmMute}
+              onCallHangUp={hangUpDmCall}
               hasMore={dmHasMore[activeDm.id] ?? false}
               onLoadMore={() => loadMoreDmMessages(activeDm.id)}
               onOpenSidebar={() => setMobileSidebarOpen(true)}
@@ -3792,7 +3795,7 @@ export default function App() {
           myId={user.id}
           fullscreen={dmCallFullscreen}
           focus={dmCallFocus}
-          dockVisible={view === 'dm' && activeDmId === dmCall.dmChannelId}
+          viewingCallDm={view === 'dm' && activeDmId === dmCall.dmChannelId}
           onSetFullscreen={setDmCallFullscreen}
           onSetFocus={setDmCallFocus}
           onMute={toggleDmMute}

@@ -1,5 +1,4 @@
 import { useLayoutEffect, useRef, useState, useEffect, useCallback } from 'react';
-import { createPortal } from 'react-dom';
 import { Avatar } from './Avatar';
 import { MarkdownContent } from './MarkdownContent';
 import { EmojiPicker } from './EmojiPickerLazy';
@@ -54,8 +53,15 @@ function fileIcon(type: string | null | undefined): string {
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '✅'];
 const GROUP_GAP_MS = 5 * 60 * 1000; // 5 min — same sender within this window = no header
 
-// ── DM Call Bar ───────────────────────────────────────────────────────────────
-function DmCallBar({ call }: { call: DmCallState }) {
+// ── DM Call Bar — the in-DM call surface on mobile (desktop has the docked panel).
+// Tapping the bar opens the fullscreen call; mute + hang-up are inline so the call
+// is controllable without leaving the chat.
+function DmCallBar({ call, onOpen, onMute, onHangUp }: {
+  call: DmCallState;
+  onOpen?: () => void;
+  onMute?: () => void;
+  onHangUp?: () => void;
+}) {
   const [elapsed, setElapsed] = useState('');
   useEffect(() => {
     if (call.status !== 'active' || !call.startedAt) return;
@@ -66,53 +72,61 @@ function DmCallBar({ call }: { call: DmCallState }) {
   }, [call.status, call.startedAt]);
 
   const isActive = call.status === 'active';
+  const screening = call.isScreenSharing || !!call.peerScreenStream;
   return (
-    <div className="px-3 md:px-4 py-1.5 bg-emerald-500/[0.06] border-b border-emerald-500/15 flex items-center gap-2 shrink-0">
-      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isActive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-      <span className="text-[11px] text-emerald-400/80">
+    <div
+      className="md:hidden px-3 py-2 bg-emerald-500/[0.06] border-b border-emerald-500/15 flex items-center gap-2 shrink-0 cursor-pointer active:bg-emerald-500/[0.12]"
+      onClick={onOpen}
+      role="button"
+      title="Open call"
+    >
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isActive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-pulse'}`} />
+      <span className="flex-1 min-w-0 truncate text-[12px] text-emerald-400/80">
         {call.status === 'outgoing-ringing' ? `Calling ${call.peerName}…`
           : call.status === 'connecting' ? 'Connecting…'
-          : `In call · ${call.peerName}${elapsed ? ` · ${elapsed}` : ''}`}
+          : `In call${elapsed ? ` · ${elapsed}` : ''}`}
+        {screening && <span className="ml-1.5 text-accent-violet">· screen</span>}
       </span>
+      {onMute && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onMute(); }}
+          title={call.isMuted ? 'Unmute' : 'Mute'}
+          className={`h-8 w-8 grid place-items-center rounded-lg border transition-colors shrink-0 ${
+            call.isMuted
+              ? 'bg-rose-500/20 border-rose-500/30 text-rose-400'
+              : 'bg-white/[0.04] border-white/[0.08] text-ink-300'
+          }`}
+        >
+          {call.isMuted ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="1" y1="1" x2="23" y2="23"/>
+              <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/>
+              <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23M12 19v3m-4 0h8"/>
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+          )}
+        </button>
+      )}
+      {onHangUp && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onHangUp(); }}
+          title="End call"
+          className="h-8 w-8 grid place-items-center rounded-lg bg-rose-500/20 border border-rose-500/30 text-rose-400 shrink-0"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+            <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.42 19.42 0 0 1 4.26 12 19.79 19.79 0 0 1 1.18 3.36 2 2 0 0 1 3.16 1.18h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.14 8.91"/>
+            <line x1="23" y1="1" x2="1" y2="23"/>
+          </svg>
+        </button>
+      )}
     </div>
   );
-}
-
-// ── Video overlay (floating PiP) ──────────────────────────────────────────────
-function DmVideoOverlay({ call, onClose }: { call: DmCallState; onClose: () => void }) {
-  const peerVideoRef = useRef<HTMLVideoElement>(null);
-  const selfVideoRef = useRef<HTMLVideoElement>(null);
-  useEffect(() => { if (peerVideoRef.current && call.peerStream) peerVideoRef.current.srcObject = call.peerStream; }, [call.peerStream]);
-  useEffect(() => {
-    if (selfVideoRef.current && call.localStream && !call.isVideoOff) selfVideoRef.current.srcObject = call.localStream;
-    else if (selfVideoRef.current) selfVideoRef.current.srcObject = null;
-  }, [call.localStream, call.isVideoOff]);
-
-  return createPortal(
-    <div className="fixed bottom-20 right-4 z-[150] w-72 bg-ink-900 border border-white/[0.09] rounded-2xl overflow-hidden shadow-2xl">
-      <div className="relative bg-ink-950 aspect-video">
-        {call.peerStream
-          ? <video ref={peerVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
-          : <div className="w-full h-full flex items-center justify-center"><Avatar name={call.peerName} id={call.peerUserId} size="lg" imageUrl={call.peerAvatarUrl} /></div>}
-        {call.localStream && !call.isVideoOff && (
-          <div className="absolute bottom-2 right-2 w-20 h-14 rounded-lg overflow-hidden border border-white/[0.12] bg-ink-900">
-            <video ref={selfVideoRef} autoPlay playsInline muted className="w-full h-full object-cover scale-x-[-1]" />
-          </div>
-        )}
-        <button onClick={onClose} className="absolute top-2 right-2 h-6 w-6 grid place-items-center rounded-full bg-black/50 text-ink-300 hover:text-ink-100 transition-colors">
-          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="11" y2="11"/><line x1="11" y1="1" x2="1" y2="11"/></svg>
-        </button>
-      </div>
-      <div className="px-3 py-2"><p className="text-[12px] text-ink-200 font-medium truncate">{call.peerName}</p></div>
-    </div>,
-    document.body,
-  );
-}
-
-function DmCallAudio({ stream }: { stream: MediaStream | null }) {
-  const ref = useRef<HTMLAudioElement>(null);
-  useEffect(() => { if (ref.current) ref.current.srcObject = stream; }, [stream]);
-  return <audio ref={ref} autoPlay playsInline style={{ display: 'none' }} />;
 }
 
 // ── Per-message row ───────────────────────────────────────────────────────────
@@ -407,6 +421,10 @@ type Props = {
   isTyping: boolean;
   call: DmCallState | null;
   onCallStart: (hasVideo: boolean) => void;
+  /** Open the fullscreen call view (mobile call bar tap). */
+  onCallOpen?: () => void;
+  onCallMute?: () => void;
+  onCallHangUp?: () => void;
   hasMore?: boolean;
   onLoadMore?: () => Promise<void>;
   onOpenSidebar?: () => void;
@@ -420,7 +438,8 @@ type Props = {
 // ── Main component ────────────────────────────────────────────────────────────
 export function DmView({
   dm, messages, me, online, onSend, onDelete, onEdit, onClearChat, onReact, onTyping, isTyping,
-  call, onCallStart, hasMore = false, onLoadMore, onOpenSidebar, onClickUser,
+  call, onCallStart, onCallOpen, onCallMute, onCallHangUp,
+  hasMore = false, onLoadMore, onOpenSidebar, onClickUser,
   peerFingerprint, peerKeyChanged, onAcceptPeerKey,
 }: Props) {
   const [showFingerprint, setShowFingerprint] = useState(false);
@@ -670,8 +689,10 @@ export function DmView({
         </div>
       )}
 
-      {/* Call status bar */}
-      {call && call.status !== 'incoming-ringing' && <DmCallBar call={call} />}
+      {/* Call status bar — mobile only; desktop shows the docked call panel */}
+      {call && call.status !== 'incoming-ringing' && (
+        <DmCallBar call={call} onOpen={onCallOpen} onMute={onCallMute} onHangUp={onCallHangUp} />
+      )}
 
       {/* ── Messages ─────────────────────────────────────────────────────── */}
       <div ref={containerRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-y-auto py-4">
