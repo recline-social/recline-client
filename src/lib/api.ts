@@ -824,13 +824,13 @@ export const api = {
     list: (serverId: string) =>
       request<{ tiers: import('../types').TierLevel[] }>(`/api/servers/${serverId}/tiers`),
 
-    create: (serverId: string, body: { name: string; description?: string; priceCents: number; position?: number; stripePriceId?: string }) =>
+    create: (serverId: string, body: { name: string; description?: string; priceCents: number; position?: number }) =>
       request<{ tier: import('../types').TierLevel }>(`/api/servers/${serverId}/tiers`, {
         method: 'POST',
         body: JSON.stringify(body),
       }),
 
-    update: (serverId: string, tierId: string, body: { name?: string; description?: string; priceCents?: number; position?: number; stripePriceId?: string }) =>
+    update: (serverId: string, tierId: string, body: { name?: string; description?: string; priceCents?: number; position?: number }) =>
       request<{ tier: import('../types').TierLevel }>(`/api/servers/${serverId}/tiers/${tierId}`, {
         method: 'PATCH',
         body: JSON.stringify(body),

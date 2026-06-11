@@ -1398,7 +1398,6 @@ function TiersTab({ serverId }: { serverId: string }) {
   const [addDesc, setAddDesc] = useState('');
   const [addPrice, setAddPrice] = useState('');
   const [addPosition, setAddPosition] = useState('');
-  const [addStripePrice, setAddStripePrice] = useState('');
   const [addErr, setAddErr] = useState('');
 
   // Edit state: tier id → partial edit
@@ -1407,7 +1406,6 @@ function TiersTab({ serverId }: { serverId: string }) {
   const [editDesc, setEditDesc] = useState('');
   const [editPrice, setEditPrice] = useState('');
   const [editPosition, setEditPosition] = useState('');
-  const [editStripePrice, setEditStripePrice] = useState('');
 
   // Channel assignment
   const [channels, setChannels] = useState<{ id: string; name: string; type: string; tierRequired: string | null }[]>([]);
@@ -1444,13 +1442,11 @@ function TiersTab({ serverId }: { serverId: string }) {
     setEditDesc(tier.description ?? '');
     setEditPrice(String(tier.priceCents / 100));
     setEditPosition(String(tier.position));
-    setEditStripePrice(tier.stripePriceId ?? '');
     setErr('');
   }
 
   function closeEdit() {
     setEditId(null);
-    setEditStripePrice('');
     setErr('');
   }
 
@@ -1471,10 +1467,9 @@ function TiersTab({ serverId }: { serverId: string }) {
         description: addDesc.trim() || undefined,
         priceCents,
         position,
-        stripePriceId: addStripePrice.trim() || undefined,
       });
       setTiers((prev) => [...prev, tier].sort((a, b) => a.position - b.position));
-      setAddName(''); setAddDesc(''); setAddPrice(''); setAddPosition(''); setAddStripePrice('');
+      setAddName(''); setAddDesc(''); setAddPrice(''); setAddPosition('');
       setAdding(false);
     } catch (ex: unknown) {
       setAddErr(ex instanceof Error ? ex.message : 'Failed to create tier');
@@ -1501,7 +1496,6 @@ function TiersTab({ serverId }: { serverId: string }) {
         description: editDesc.trim() || undefined,
         priceCents,
         position,
-        stripePriceId: editStripePrice.trim() || undefined,
       });
       setTiers((prev) =>
         prev.map((t) => t.id === editId ? { ...t, ...tier } : t)
@@ -1622,19 +1616,6 @@ function TiersTab({ serverId }: { serverId: string }) {
                 disabled={busy}
               />
             </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="block text-[11px] uppercase tracking-widest text-ink-300 font-semibold">
-              Stripe Price ID <span className="text-ink-500 normal-case font-normal">(optional — required for paid subscriptions)</span>
-            </label>
-            <input
-              value={editStripePrice}
-              onChange={(e) => setEditStripePrice(e.target.value)}
-              placeholder="price_..."
-              className="input w-full text-sm font-mono"
-              disabled={busy}
-            />
           </div>
 
           <div className="flex gap-2 pt-1">
@@ -1764,18 +1745,6 @@ function TiersTab({ serverId }: { serverId: string }) {
                 disabled={busy}
               />
             </div>
-          </div>
-          <div className="space-y-1.5">
-            <label className="block text-[11px] uppercase tracking-widest text-ink-300 font-semibold">
-              Stripe Price ID <span className="text-ink-500 normal-case font-normal">(optional — required for paid subscriptions)</span>
-            </label>
-            <input
-              value={addStripePrice}
-              onChange={(e) => setAddStripePrice(e.target.value)}
-              placeholder="price_..."
-              className="input w-full text-sm font-mono"
-              disabled={busy}
-            />
           </div>
           <div className="flex gap-2">
             <button
