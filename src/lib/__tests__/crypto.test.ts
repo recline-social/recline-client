@@ -243,8 +243,10 @@ describe('deriveDmKey (ECDH P-256 + HKDF → AES-GCM)', () => {
 // ── key pair persistence (IndexedDB) ──────────────────────────────────────────
 
 describe('saveDmKeyPair / loadDmKeyPair / exportPrivateKeyJwk', () => {
+  const UID = 'test-user';
+
   it('loadDmKeyPair returns null when nothing is stored', async () => {
-    expect(await loadDmKeyPair()).toBeNull();
+    expect(await loadDmKeyPair(UID)).toBeNull();
   });
 
   it('persists a freshly generated (extractable) pair non-extractably (CRYPTO-011 regression)', async () => {
@@ -255,9 +257,9 @@ describe('saveDmKeyPair / loadDmKeyPair / exportPrivateKeyJwk', () => {
     // strips key_ops before the re-import.
     const pair = await generateDmKeyPair();
     expect(pair.privateKey.extractable).toBe(true); // fresh keys are extractable for backup
-    await saveDmKeyPair(pair);
+    await saveDmKeyPair(UID, pair);
 
-    const loaded = (await loadDmKeyPair())!;
+    const loaded = (await loadDmKeyPair(UID))!;
     expect(loaded).not.toBeNull();
     expect(loaded.privateKey.extractable).toBe(false); // stored non-exfiltratable
     expect(await pubFingerprint(loaded.publicKey)).toBe(await pubFingerprint(pair.publicKey));
@@ -270,9 +272,9 @@ describe('saveDmKeyPair / loadDmKeyPair / exportPrivateKeyJwk', () => {
 
   it('persists a pair whose private key is already non-extractable; loaded pair still works', async () => {
     const pair = await makeNonExtractablePair();
-    await saveDmKeyPair(pair);
+    await saveDmKeyPair(UID, pair);
 
-    const loaded = (await loadDmKeyPair())!;
+    const loaded = (await loadDmKeyPair(UID))!;
     expect(loaded).not.toBeNull();
     expect(loaded.privateKey.extractable).toBe(false); // AUTH-012/CRYPTO-003
     expect(await exportPrivateKeyJwk(loaded.privateKey)).toBeNull(); // cannot exfiltrate
@@ -296,23 +298,25 @@ describe('saveDmKeyPair / loadDmKeyPair / exportPrivateKeyJwk', () => {
 // ── 3. rotation + history chaining ────────────────────────────────────────────
 
 describe('rotateDmKeyPair / archiveCurrentKeyPair / loadDmKeyHistory', () => {
+  const UID = 'test-user';
+
   it('rotateDmKeyPair archives the old key and persists a new current pair (CRYPTO-011 regression)', async () => {
     // Used to reject mid-way (saveDmKeyPair DataError) leaving a half-rotated
     // state: old key duplicated into history, 'current' unchanged.
     const original = await makeNonExtractablePair();
-    await saveDmKeyPair(original);
+    await saveDmKeyPair(UID, original);
     const originalFp = await pubFingerprint(original.publicKey);
 
-    const rotated = await rotateDmKeyPair();
+    const rotated = await rotateDmKeyPair(UID);
     expect(rotated.privateKey.extractable).toBe(true); // returned pair supports backup export
 
-    const current = (await loadDmKeyPair())!;
+    const current = (await loadDmKeyPair(UID))!;
     const rotatedFp = await pubFingerprint(rotated.publicKey);
     expect(await pubFingerprint(current.publicKey)).toBe(rotatedFp); // current is the NEW key
     expect(rotatedFp).not.toBe(originalFp);
     expect(current.privateKey.extractable).toBe(false); // persisted non-exfiltratable
 
-    const history = await loadDmKeyHistory();
+    const history = await loadDmKeyHistory(UID);
     expect(history.length).toBe(1); // exactly one archive entry — no duplicates
     expect(await pubFingerprint(history[0].publicKey)).toBe(originalFp);
   });
@@ -320,20 +324,20 @@ describe('rotateDmKeyPair / archiveCurrentKeyPair / loadDmKeyHistory', () => {
   it('archive + save chains history: old-epoch messages still decrypt via loadDmKeyHistory', async () => {
     // Drives the rotation flow through its building blocks directly.
     const original = await makeNonExtractablePair();
-    await saveDmKeyPair(original);
+    await saveDmKeyPair(UID, original);
     const peer = await generateDmKeyPair();
     const oldMsg = await encryptTo(peer.privateKey, original.publicKey, 'dm-rot-1', 'sent before rotation');
 
-    await archiveCurrentKeyPair();
+    await archiveCurrentKeyPair(UID);
     const next = await makeNonExtractablePair();
-    await saveDmKeyPair(next);
+    await saveDmKeyPair(UID, next);
 
     // current key changed
-    const current = (await loadDmKeyPair())!;
+    const current = (await loadDmKeyPair(UID))!;
     expect(await pubFingerprint(current.publicKey)).toBe(await pubFingerprint(next.publicKey));
 
     // old key is in history (newest first) and still decrypts the old message
-    const history = await loadDmKeyHistory();
+    const history = await loadDmKeyHistory(UID);
     expect(history.length).toBe(1);
     expect(await pubFingerprint(history[0].publicKey)).toBe(await pubFingerprint(original.publicKey));
     expect(await decryptFrom(history[0].privateKey, peer.publicKey, 'dm-rot-1', oldMsg)).toBe('sent before rotation');
@@ -348,14 +352,14 @@ describe('rotateDmKeyPair / archiveCurrentKeyPair / loadDmKeyHistory', () => {
     for (let i = 0; i < 6; i++) {
       const pair = await makeNonExtractablePair();
       fps.push(await pubFingerprint(pair.publicKey));
-      await saveDmKeyPair(pair);
-      await archiveCurrentKeyPair();
+      await saveDmKeyPair(UID, pair);
+      await archiveCurrentKeyPair(UID);
       if (i === 4) {
-        expect((await loadDmKeyHistory()).length).toBe(5); // at cap, nothing dropped yet
+        expect((await loadDmKeyHistory(UID)).length).toBe(5); // at cap, nothing dropped yet
         expect(warn).not.toHaveBeenCalled();
       }
     }
-    const history = await loadDmKeyHistory();
+    const history = await loadDmKeyHistory(UID);
     expect(history.length).toBe(5);
     expect(warn).toHaveBeenCalledTimes(1);
     const histFps = await Promise.all(history.map((p) => pubFingerprint(p.publicKey)));
@@ -364,8 +368,15 @@ describe('rotateDmKeyPair / archiveCurrentKeyPair / loadDmKeyHistory', () => {
   });
 
   it('archiveCurrentKeyPair is a no-op when no current key exists', async () => {
-    await archiveCurrentKeyPair();
-    expect(await loadDmKeyHistory()).toEqual([]);
+    await archiveCurrentKeyPair(UID);
+    expect(await loadDmKeyHistory(UID)).toEqual([]);
+  });
+
+  it('keys from different users are isolated — loadDmKeyPair returns null for a different userId', async () => {
+    const pair = await makeNonExtractablePair();
+    await saveDmKeyPair('user-a', pair);
+    expect(await loadDmKeyPair('user-b')).toBeNull();
+    expect(await loadDmKeyPair('user-a')).not.toBeNull();
   });
 });
 
@@ -409,7 +420,7 @@ describe('DM key backups', () => {
   });
 
   it('v3: decryptDmKeyBackup restores a working pair AND merges real-world history JWKs into IndexedDB (CRYPTO-011 regression)', async () => {
-    const restored = (await decryptDmKeyBackup(v3Blob, PASSWORD))!;
+    const restored = (await decryptDmKeyBackup(v3Blob, PASSWORD, 'test-user'))!;
     expect(restored).not.toBeNull();
     expect(await pubFingerprint(restored.publicKey)).toBe(await pubFingerprint(alice.publicKey));
     // restored private key derives the same shared secret → decrypts the original message
@@ -420,7 +431,7 @@ describe('DM key backups', () => {
     // CRYPTO-011 regression: real history JWKs carry key_ops:['deriveKey'] (they
     // come from exportPrivateKeyJwk); importHistoryEntry used to choke on them and
     // device history stayed empty after every restore. It must merge them now.
-    const deviceHistory = await loadDmKeyHistory();
+    const deviceHistory = await loadDmKeyHistory('test-user');
     expect(deviceHistory.length).toBe(1);
     expect(await pubFingerprint(deviceHistory[0].publicKey)).toBe(await pubFingerprint(historyPair.publicKey));
     expect(deviceHistory[0].privateKey.extractable).toBe(false); // merged non-extractably
@@ -434,10 +445,10 @@ describe('DM key backups', () => {
     const bareHistoryJwk: JsonWebKey = { ...historyPrivJwk };
     delete bareHistoryJwk.key_ops;
     const blob = await encryptDmKeyBackup(alicePrivJwk, PASSWORD, [bareHistoryJwk]);
-    const restored = await decryptDmKeyBackup(blob, PASSWORD);
+    const restored = await decryptDmKeyBackup(blob, PASSWORD, 'test-user');
     expect(restored).not.toBeNull();
 
-    const deviceHistory = await loadDmKeyHistory();
+    const deviceHistory = await loadDmKeyHistory('test-user');
     expect(deviceHistory.length).toBe(1);
     expect(await pubFingerprint(deviceHistory[0].publicKey)).toBe(await pubFingerprint(historyPair.publicKey));
     expect(deviceHistory[0].privateKey.extractable).toBe(false); // merged non-extractably
@@ -451,9 +462,9 @@ describe('DM key backups', () => {
     expect(jwks.priv.d).toBe(alicePrivJwk.d);
     expect(jwks.history).toEqual([]); // pre-v3 blobs carry no history
 
-    const restored = (await decryptDmKeyBackup(blob, PASSWORD))!;
+    const restored = (await decryptDmKeyBackup(blob, PASSWORD, 'test-user'))!;
     expect(await decryptFrom(restored.privateKey, peer.publicKey, 'dm-bk-1', msgToAlice)).toBe('pre-backup message');
-    expect(await loadDmKeyHistory()).toEqual([]); // nothing merged
+    expect(await loadDmKeyHistory('test-user')).toEqual([]); // nothing merged
   });
 
   it('v2 (600k iterations, bare JWK payload): decrypts with empty history', async () => {
@@ -465,9 +476,9 @@ describe('DM key backups', () => {
 
   it('wrong password → null from both APIs, and NO partial state lands in IndexedDB', async () => {
     expect(await decryptDmKeyBackupJwks(v3Blob, 'wrong-password')).toBeNull();
-    expect(await decryptDmKeyBackup(v3Blob, 'wrong-password')).toBeNull();
-    expect(await loadDmKeyHistory()).toEqual([]); // history NOT merged on failure
-    expect(await loadDmKeyPair()).toBeNull(); // current key NOT touched
+    expect(await decryptDmKeyBackup(v3Blob, 'wrong-password', 'test-user')).toBeNull();
+    expect(await loadDmKeyHistory('test-user')).toEqual([]); // history NOT merged on failure
+    expect(await loadDmKeyPair('test-user')).toBeNull(); // current key NOT touched
   });
 
   it('tampered ciphertext → null (AES-GCM auth rejects)', async () => {
@@ -528,7 +539,7 @@ describe('stale backup restore (backup predates a key rotation)', () => {
     // carried no history, device history is empty, and the restored A key fails
     // AEAD against B-epoch ciphertext. Current behavior = decryptText REJECTS
     // (callers must catch); it does not return null or partial plaintext.
-    expect(await loadDmKeyHistory()).toEqual([]);
+    expect(await loadDmKeyHistory('test-user')).toEqual([]);
     await expect(decryptFrom(restored.privateKey, peer.publicKey, 'dm-stale', msgUnderB)).rejects.toThrow();
   });
 });
@@ -613,7 +624,7 @@ describe('DM key cache (memory-only)', () => {
 
   it('clearAllDmKeys wipes memory cache, legacy storage keys, and (async) IndexedDB key pairs', async () => {
     const pair = await makeNonExtractablePair();
-    await saveDmKeyPair(pair);
+    await saveDmKeyPair('test-user', pair);
     const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt']);
     cacheDmKey('dm-c2', key);
     sessionStorage.setItem('recline.dm.aeskey.dm-c2', 'legacy');
@@ -631,7 +642,7 @@ describe('DM key cache (memory-only)', () => {
     // LOCKED-IN BEHAVIOR: the IndexedDB wipe is fire-and-forget (not awaited by
     // clearAllDmKeys), so we poll until it lands rather than asserting immediately.
     await vi.waitFor(async () => {
-      expect(await loadDmKeyPair()).toBeNull();
+      expect(await loadDmKeyPair('test-user')).toBeNull();
     }, { timeout: 10_000 });
   });
 });

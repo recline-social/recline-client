@@ -352,10 +352,11 @@ async function importHistoryEntry(privJwk: JsonWebKey): Promise<{ pubJwk: JsonWe
 
 /** Merge backup-chained history keys into the device's IndexedDB key history
  *  (deduped by public-key point, non-extractable). Non-fatal on any failure. */
-async function mergeBackupHistory(historyJwks: JsonWebKey[]): Promise<void> {
+async function mergeBackupHistory(userId: string, historyJwks: JsonWebKey[]): Promise<void> {
   if (!historyJwks.length) return;
+  const histKey = `history:${userId}`;
   try {
-    const existing = (await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }[]>('history')) ?? [];
+    const existing = (await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }[]>(histKey)) ?? [];
     const seen = new Set(existing.map((e) => `${e.pubJwk.x}:${e.pubJwk.y}`));
     let changed = false;
     for (const jwk of historyJwks) {
@@ -367,7 +368,7 @@ async function mergeBackupHistory(historyJwks: JsonWebKey[]): Promise<void> {
         changed = true;
       } catch { /* corrupt entry — skip */ }
     }
-    if (changed) await idbSet('history', existing.slice(0, BACKUP_HISTORY_MAX));
+    if (changed) await idbSet(histKey, existing.slice(0, BACKUP_HISTORY_MAX));
   } catch { /* IDB unavailable — history stays backup-only */ }
 }
 
@@ -377,7 +378,15 @@ async function mergeBackupHistory(historyJwks: JsonWebKey[]): Promise<void> {
  * Side effect: any history keys chained into a v3 blob are merged into the
  * device's IndexedDB key history so old-epoch messages decrypt after restore.
  */
-export async function decryptDmKeyBackup(blob: string, password: string): Promise<CryptoKeyPair | null> {
+/**
+ * Decrypt a backup blob and reconstruct the full CryptoKeyPair.
+ * Returns null if the password is wrong or the blob is corrupt.
+ *
+ * @param userId  When provided, any chained history keys in the blob are merged
+ *   into this user's IndexedDB history so old-epoch messages decrypt after restore.
+ *   Pass null (or omit) only in test environments where IDB scoping is irrelevant.
+ */
+export async function decryptDmKeyBackup(blob: string, password: string, userId: string | null = null): Promise<CryptoKeyPair | null> {
   const jwks = await decryptDmKeyBackupJwks(blob, password);
   if (!jwks) return null;
   try {
@@ -392,7 +401,7 @@ export async function decryptDmKeyBackup(blob: string, password: string): Promis
       crypto.subtle.importKey('jwk', pubJwk,  { name: 'ECDH', namedCurve: 'P-256' }, true,  []),
       crypto.subtle.importKey('jwk', privJwk, { name: 'ECDH', namedCurve: 'P-256' }, true,  ['deriveKey']),
     ]);
-    await mergeBackupHistory(jwks.history);
+    if (userId) await mergeBackupHistory(userId, jwks.history);
     return { publicKey, privateKey };
   } catch {
     return null;
@@ -413,7 +422,14 @@ export async function exportPublicKeyJwk(publicKey: CryptoKey): Promise<string> 
  * should happen BEFORE calling saveDmKeyPair — callers hold the extractable version in memory
  * only long enough to encrypt the backup, then this function stores it non-extractably.
  */
-export async function saveDmKeyPair(pair: CryptoKeyPair): Promise<void> {
+/**
+ * Persist the key pair to IndexedDB, scoped to the given user.
+ *
+ * Keys are stored under `current:${userId}` so a fast same-tab logout/login
+ * cannot let the next account reuse the previous account's ECDH identity key
+ * even if the async `idbClear()` on logout races the new session's setup.
+ */
+export async function saveDmKeyPair(userId: string, pair: CryptoKeyPair): Promise<void> {
   let privateKey = pair.privateKey;
   if (privateKey.extractable) {
     // Re-import as non-extractable so the stored key cannot be exfiltrated by XSS.
@@ -431,13 +447,18 @@ export async function saveDmKeyPair(pair: CryptoKeyPair): Promise<void> {
     );
   }
   const pubJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
-  await idbSet('current', { pubJwk, privateKey });
+  await idbSet(`current:${userId}`, { pubJwk, privateKey });
 }
 
-/** Load a previously saved key pair from IndexedDB. Returns null if none. */
-export async function loadDmKeyPair(): Promise<CryptoKeyPair | null> {
+/**
+ * Load the previously saved key pair for this user from IndexedDB.
+ * Returns null if none exists or if the stored entry belongs to a different user
+ * (guards against stale keys from a racing logout/login on the same tab).
+ */
+export async function loadDmKeyPair(userId: string): Promise<CryptoKeyPair | null> {
+  const idbKey = `current:${userId}`;
   try {
-    const stored = await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }>('current');
+    const stored = await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }>(idbKey);
     if (!stored) return null;
     const publicKey = await crypto.subtle.importKey(
       'jwk', stored.pubJwk,
@@ -446,7 +467,7 @@ export async function loadDmKeyPair(): Promise<CryptoKeyPair | null> {
     );
     return { publicKey, privateKey: stored.privateKey };
   } catch {
-    await idbDelete('current').catch(() => {});
+    await idbDelete(idbKey).catch(() => {});
     return null;
   }
 }
@@ -660,10 +681,11 @@ export async function wipeDmIdentityKeysForReset(): Promise<void> {
 // public key to the server via api.registerPublicKey() to complete rotation.
 
 /** Archive the current keypair to history (called before rotation). */
-export async function archiveCurrentKeyPair(): Promise<void> {
-  const current = await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }>('current');
+export async function archiveCurrentKeyPair(userId: string): Promise<void> {
+  const current = await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }>(`current:${userId}`);
   if (!current) return; // no key to archive — new user or after a wipe
-  const history = (await idbGet<typeof current[]>('history')) ?? [];
+  const histKey = `history:${userId}`;
+  const history = (await idbGet<typeof current[]>(histKey)) ?? [];
   history.unshift(current); // newest first
   if (history.length > DM_KEYPAIR_HISTORY_MAX) {
     // Dropping the oldest archived key — any DM still encrypted only against it
@@ -675,7 +697,7 @@ export async function archiveCurrentKeyPair(): Promise<void> {
       `Messages encrypted only against those keys may no longer decrypt on this device.`,
     );
   }
-  await idbSet('history', history);
+  await idbSet(histKey, history);
 }
 
 /**
@@ -683,17 +705,17 @@ export async function archiveCurrentKeyPair(): Promise<void> {
  * After calling this, upload the new public key with api.registerPublicKey() and
  * call clearAllDmKeys() to flush derived AES key caches.
  */
-export async function rotateDmKeyPair(): Promise<CryptoKeyPair> {
-  await archiveCurrentKeyPair();
+export async function rotateDmKeyPair(userId: string): Promise<CryptoKeyPair> {
+  await archiveCurrentKeyPair(userId);
   const pair = await generateDmKeyPair();
-  await saveDmKeyPair(pair);
+  await saveDmKeyPair(userId, pair);
   return pair;
 }
 
-/** Load all historical (pre-rotation) key pairs from IndexedDB. */
-export async function loadDmKeyHistory(): Promise<CryptoKeyPair[]> {
+/** Load all historical (pre-rotation) key pairs from IndexedDB for this user. */
+export async function loadDmKeyHistory(userId: string): Promise<CryptoKeyPair[]> {
   try {
-    const entries = (await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }[]>('history')) ?? [];
+    const entries = (await idbGet<{ pubJwk: JsonWebKey; privateKey: CryptoKey }[]>(`history:${userId}`)) ?? [];
     const pairs: CryptoKeyPair[] = [];
     for (const { pubJwk, privateKey } of entries) {
       try {

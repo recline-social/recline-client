@@ -501,6 +501,7 @@ export default function App() {
   const {
     dmKeysReady,
     setDmKeysReady,
+    dmKeyEpoch,
     dmKeyMismatch,
     setDmKeyMismatch,
     dmBackupOutOfSync,
@@ -1967,7 +1968,7 @@ export default function App() {
       runPeerTofu(dm.otherUserId, dm.otherPublicKey);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeDmId, dmKeysReady]);
+  }, [activeDmId, dmKeysReady, dmKeyEpoch]);
 
   /* FEAT-020: Cmd/Ctrl+K opens message search. */
   useEffect(() => {

@@ -97,6 +97,11 @@ export type UseDmKeysParams = {
 export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, setDmMsgLoaded }: UseDmKeysParams) {
   // True once setupDmKeys has placed a key pair in dmKeyPairRef; guards loadDmMessages
   const [dmKeysReady, setDmKeysReady] = useState(false);
+  // Monotonically-incrementing counter — bumped after every successful key change
+  // (sync, rotation, reset). App.tsx includes this in the DM loader effect deps so
+  // a successful sync/rotation triggers a re-decrypt even when dmKeysReady was
+  // already true (i.e. the false→true transition doesn't fire as a no-op).
+  const [dmKeyEpoch, setDmKeyEpoch] = useState(0);
   // True when the local ECDH key doesn't match the server's stored key AND no password is
   // available to reconcile (page refresh scenario). DM decryption may be degraded.
   const [dmKeyMismatch, setDmKeyMismatch] = useState(false);
@@ -263,7 +268,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     // BUG 9: single lazy-loaded history cache — avoids calling loadDmKeyHistory() twice
     let _history: CryptoKeyPair[] | null = null;
     const getHistory = async () => {
-      if (!_history) _history = await loadDmKeyHistory();
+      if (!_history) _history = await loadDmKeyHistory(user?.id ?? '');
       return _history;
     };
 
@@ -437,7 +442,8 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       serverKeyFetchFailed = true;
     }
 
-    let pair = await loadDmKeyPair();
+    const userId = user?.id ?? '';
+    let pair = await loadDmKeyPair(userId);
 
     // A corrupt stored pair must not strand the whole key pipeline — treat it
     // as missing and fall through to backup-restore / fresh generation.
@@ -544,7 +550,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
         let restored: CryptoKeyPair | null = null;
         try {
           const { backup } = await api.getDmKeyBackup(password, authKdfSalt);
-          if (backup) restored = await decryptDmKeyBackup(backup, password);
+          if (backup) restored = await decryptDmKeyBackup(backup, password, userId);
         } catch { /* non-fatal */ }
 
         if (restored) {
@@ -560,7 +566,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
             return;
           }
           // Backup matches server key — restore locally, no re-registration needed.
-          await saveDmKeyPair(restored).catch((err) =>
+          await saveDmKeyPair(userId, restored).catch((err) =>
             console.error('[setupDmKeys] could not persist restored key (continuing in-memory):', err));
           pair = restored;
           dmKeyPairRef.current = pair;
@@ -598,14 +604,14 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       let restored: CryptoKeyPair | null = null;
       try {
         const { backup } = await api.getDmKeyBackup(password, authKdfSalt);
-        if (backup) restored = await decryptDmKeyBackup(backup, password);
+        if (backup) restored = await decryptDmKeyBackup(backup, password, userId);
       } catch { /* non-fatal — backup fetch/decrypt failure */ }
 
       // Phase B: handle restored key OUTSIDE the non-fatal catch so registration
       // failures propagate correctly (Issue 2: .catch(() => {}) swallowed them before).
       if (restored) {
         const restoredJwk = await exportPublicKeyJwk(restored.publicKey);
-        await saveDmKeyPair(restored);
+        await saveDmKeyPair(userId, restored);
         dmKeyPairRef.current = restored;
         setDmMsgLoaded({});
 
@@ -684,7 +690,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     // failure must degrade to an in-memory key, never to "no key at all"
     // (the old unguarded await here stranded dmKeyPairRef as null forever).
     dmKeyPairRef.current = pair;
-    await saveDmKeyPair(pair).catch((err) =>
+    await saveDmKeyPair(userId, pair).catch((err) =>
       console.error('[setupDmKeys] could not persist fresh key (continuing in-memory):', err));
     setDmMsgLoaded({});
     const freshJwk = await exportPublicKeyJwk(pair.publicKey);
@@ -766,7 +772,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     // currentServerKey matched pubJwk — server already correct, no registration needed.
 
     // ── All checks passed — now mutate local state ────────────────────────────
-    await saveDmKeyPair(restored);
+    await saveDmKeyPair(user?.id ?? '', restored);
     dmKeyPairRef.current = restored;
     dmKeyStatusRef.current = 'send-ready';
     // Flush only the derived AES cache — NOT IndexedDB, which now holds the restored key.
@@ -775,6 +781,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     setDmMessages({});
     setDmKeyMismatch(false);
     setDmBackupOutOfSync(false);
+    setDmKeyEpoch((v) => v + 1);
     setDmKeysReady(true);
     // M-7: Raw password is not cached in sessionStorage.
   }
@@ -813,13 +820,13 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       const pubJwk = await exportPublicKeyJwk(newPair.publicKey);
 
       // Step 3: archive old key first
-      await archiveCurrentKeyPair();
+      await archiveCurrentKeyPair(user?.id ?? '');
 
       // Export private key BEFORE saving (while still extractable — saveDmKeyPair re-imports as non-extractable)
       const privJwkForBackup = await exportPrivateKeyJwk(newPair.privateKey);
 
       // Step 4: persist new key to IDB
-      await saveDmKeyPair(newPair);
+      await saveDmKeyPair(user?.id ?? '', newPair);
       newKeySaved = true;
 
       // Step 5: update in-memory ref
@@ -891,6 +898,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       // banner must surface; dmKeysReady must stay false until the user retries rotation.
       if (newKeySaved && registrationSucceeded) {
         dmKeyStatusRef.current = 'send-ready';
+        setDmKeyEpoch((v) => v + 1);
         setDmKeysReady(true);
       }
     }
@@ -942,7 +950,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       // Do NOT swallow this error: if IDB write fails after the server accepted the new public
       // key, the user is in a split state (server knows new key, local has nothing on disk).
       // The outer catch handles this as a post-registration failure.
-      await saveDmKeyPair(newPair);
+      await saveDmKeyPair(user?.id ?? '', newPair);
       dmKeyPairRef.current = newPair;
       clearDmAesKeyCache();
 
@@ -965,6 +973,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       setDmMessages({});
       setDmKeyMismatch(false);
       dmKeyStatusRef.current = 'send-ready';
+      setDmKeyEpoch((v) => v + 1);
       setDmKeysReady(true);
     } catch (err) {
       if (!registrationDone) {
@@ -991,6 +1000,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     // state (setters exposed where App.tsx mutates them directly — banner dismiss, logout)
     dmKeysReady,
     setDmKeysReady,
+    dmKeyEpoch,
     dmKeyMismatch,
     setDmKeyMismatch,
     dmBackupOutOfSync,
