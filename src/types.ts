@@ -277,6 +277,8 @@ export type DmCallState = {
   peerName: string;
   peerAvatarUrl: string | null;
   status: DmCallStatus;
+  /** True if we initiated this call. Glare resolution during renegotiation: caller = impolite peer. */
+  isCaller: boolean;
   hasVideo: boolean;
   isMuted: boolean;
   isVideoOff: boolean;
@@ -297,6 +299,9 @@ export type DmCallState = {
   /** ICE candidates queued before remote description is set, drained in offer/answer handlers. */
   _pendingCandidates?: RTCIceCandidateInit[];
 };
+
+/** Which tile the fullscreen call stage is focused on. 'auto' = best available (screen > camera). */
+export type DmCallFocus = 'auto' | 'peer-screen' | 'self-screen' | 'peer-cam' | 'self-cam';
 
 export type FriendStatus = 'pending' | 'accepted';
 

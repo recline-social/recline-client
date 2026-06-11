@@ -16,8 +16,8 @@ import { TierSubscribeModal } from './components/TierSubscribeModal';
 import { DmList } from './components/DmList';
 import { DmView } from './components/DmView';
 import { DmCallIncoming } from './components/DmCallIncoming';
-import { DmCallWindow } from './components/DmCallWindow';
-import type { DmCallState } from './types';
+import { DmCallDock, DmCallOverlay } from './components/DmCallWindow';
+import type { DmCallState, DmCallFocus } from './types';
 import { ServerHome } from './components/ServerHome';
 import { getServerUrl } from './lib/serverUrl';
 import { api, getToken, setToken, setUnauthorizedHandler } from './lib/api';
@@ -413,8 +413,14 @@ export default function App() {
   const [dmUnreadMap, setDmUnreadMap] = useState<Record<string, number>>({});
   // DM calls
   const [dmCall, setDmCall] = useState<DmCallState | null>(null);
+  // Call UI: docked panel renders in the DM view; fullscreen overlays everything;
+  // the floating pill shows when neither applies. Focus picks the fullscreen tile.
+  const [dmCallFullscreen, setDmCallFullscreen] = useState(false);
+  const [dmCallFocus, setDmCallFocus] = useState<DmCallFocus>('auto');
   const dmCallRef = useRef<DmCallState | null>(null);
   dmCallRef.current = dmCall;
+  // Serializes all WebRTC SDP operations for the (single) active DM call.
+  const dmSdpChainRef = useRef<Promise<void>>(Promise.resolve());
   const dmCallAutoCancelRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dmCallDisconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Single-flight DM-list refresh — concurrent dm:message:new handlers for unknown
@@ -1446,6 +1452,7 @@ export default function App() {
         peerName: data.callerName,
         peerAvatarUrl: data.callerAvatarUrl,
         status: 'incoming-ringing',
+        isCaller: false,
         hasVideo: data.hasVideo,
         isMuted: false,
         isVideoOff: false,
@@ -1468,21 +1475,21 @@ export default function App() {
       if (!call || call.dmChannelId !== data.dmChannelId) return;
 
       if (call.status === 'outgoing-ringing') {
-        // Caller path: create PC with ICE servers, send offer.
-        // offerToReceiveVideo is always true so the SDP always includes a video
-        // m-line — even if the caller has audio-only, the callee may have enabled
-        // their camera and needs somewhere to send it.
+        // Caller path: create PC with ICE servers. addTrack inside the builder fires
+        // onnegotiationneeded, which sends the initial offer (perfect negotiation —
+        // same path as screen-share renegotiation, no separate manual offer).
         const pc = buildDmPeerConnection(data.iceServers, data.dmChannelId, call.localStream);
-        pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true })
-          .then((offer) => pc.setLocalDescription(offer))
-          .then(() => { s.emit('dm:call:offer', { dmChannelId: data.dmChannelId, sdp: pc.localDescription! }); })
-          .catch(console.error);
+        // Sync the ref BEFORE onnegotiationneeded's queued task runs — it checks
+        // status, and a stale 'outgoing-ringing' would suppress the initial offer.
+        dmCallRef.current = { ...call, status: 'connecting', pc };
         setDmCall((prev) => prev ? { ...prev, status: 'connecting', pc } : prev);
       } else if (call.status === 'connecting' && !call.pc) {
-        // Callee path: create PC with ICE servers, wait for offer from caller
+        // Callee path: create PC with ICE servers, wait for offer from caller.
+        // The callee's own tracks negotiate via onnegotiationneeded after the
+        // caller's initial offer lands (see the remoteDescription guard there).
         const pc = buildDmPeerConnection(data.iceServers, data.dmChannelId, call.localStream);
-        setDmCall((prev) => prev ? { ...prev, pc } : prev);
         dmCallRef.current = { ...dmCallRef.current!, pc };
+        setDmCall((prev) => prev ? { ...prev, pc } : prev);
       }
     };
 
@@ -1494,35 +1501,54 @@ export default function App() {
       if (dmCallRef.current?.dmChannelId === data.dmChannelId) teardownDmCall();
     };
 
-    const onDmCallOffer = async (data: { dmChannelId: string; sdp: RTCSessionDescriptionInit }) => {
+    const onDmCallOffer = (data: { dmChannelId: string; sdp: RTCSessionDescriptionInit }) => {
       const call = dmCallRef.current;
       if (!call || call.dmChannelId !== data.dmChannelId) return;
       if (!call.pc) return;
       // Accept offers during initial SDP exchange (connecting) AND renegotiation (active — screen share)
       if (call.status !== 'connecting' && call.status !== 'active') return;
       const pc = call.pc;
-      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      // Drain pending ICE candidates
-      const pending = call._pendingCandidates ?? [];
-      call._pendingCandidates = [];
-      for (const c of pending) {
-        try { await pc.addIceCandidate(c); } catch { /* non-fatal */ }
-      }
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      s.emit('dm:call:answer', { dmChannelId: data.dmChannelId, sdp: pc.localDescription! });
+      // Perfect negotiation, serialized: an offer arriving while another SDP op is
+      // mid-flight used to throw InvalidStateError with no retry — negotiation wedged
+      // and the screen share showed up "sometimes". All SDP work now runs through
+      // queueDmSdpOp so operations on this PC can never interleave.
+      queueDmSdpOp(async () => {
+        const polite = !call.isCaller; // callee yields in a collision
+        // Ops are serialized, so signaling state fully reflects all prior ops here —
+        // 'have-local-offer' means our own offer is genuinely outstanding (glare).
+        if (pc.signalingState === 'have-local-offer') {
+          if (!polite) return; // impolite: ignore — the peer will roll back and answer ours
+          await pc.setLocalDescription({ type: 'rollback' }); // serialized, never Promise.all (§3 glare lesson)
+        }
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        // Drain pending ICE candidates
+        const pending = call._pendingCandidates ?? [];
+        call._pendingCandidates = [];
+        for (const c of pending) {
+          try { await pc.addIceCandidate(c); } catch { /* non-fatal */ }
+        }
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        s.emit('dm:call:answer', { dmChannelId: data.dmChannelId, sdp: pc.localDescription! });
+      });
     };
 
-    const onDmCallAnswer = async (data: { dmChannelId: string; sdp: RTCSessionDescriptionInit }) => {
+    const onDmCallAnswer = (data: { dmChannelId: string; sdp: RTCSessionDescriptionInit }) => {
       const call = dmCallRef.current;
       if (!call || call.dmChannelId !== data.dmChannelId || !call.pc) return;
-      await call.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      // Drain pending ICE candidates
-      const pending = call._pendingCandidates ?? [];
-      call._pendingCandidates = [];
-      for (const c of pending) {
-        try { await call.pc.addIceCandidate(c); } catch { /* non-fatal */ }
-      }
+      const pc = call.pc;
+      queueDmSdpOp(async () => {
+        // A stale answer (e.g. for an offer we rolled back during glare) would throw —
+        // only apply when we actually have a local offer outstanding.
+        if (pc.signalingState !== 'have-local-offer') return;
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        // Drain pending ICE candidates
+        const pending = call._pendingCandidates ?? [];
+        call._pendingCandidates = [];
+        for (const c of pending) {
+          try { await pc.addIceCandidate(c); } catch { /* non-fatal */ }
+        }
+      });
     };
 
     const onDmCallIce = async (data: { dmChannelId: string; candidate: RTCIceCandidateInit }) => {
@@ -2544,6 +2570,9 @@ export default function App() {
       prev.localScreenStream?.getTracks().forEach((t) => t.stop());
       return null;
     });
+    setDmCallFullscreen(false);
+    setDmCallFocus('auto');
+    dmSdpChainRef.current = Promise.resolve();
     playCallSound('leave_call');
   }
 
@@ -2568,6 +2597,7 @@ export default function App() {
       peerName: dm.otherDisplayName,
       peerAvatarUrl: dm.otherAvatarUrl ?? null,
       status: 'outgoing-ringing',
+      isCaller: true,
       hasVideo,
       isMuted: false,
       isVideoOff: false,
@@ -2583,6 +2613,9 @@ export default function App() {
     // Store in ref synchronously so teardown can find the stream even before setDmCall processes
     dmCallRef.current = callState;
     setDmCall(callState);
+    // Phones get the fullscreen call UI; desktop gets the docked panel in the DM view
+    setDmCallFullscreen(window.innerWidth < 768);
+    setDmCallFocus('auto');
     playCallSound('join_call');
     socketRef.current?.emit('dm:call:invite', { dmChannelId: dmId, hasVideo });
     // Auto-cancel after 45s if no answer
@@ -2630,8 +2663,24 @@ export default function App() {
     };
     dmCallRef.current = nextCallState;
     setDmCall(nextCallState);
+    setDmCallFullscreen(window.innerWidth < 768);
+    setDmCallFocus('auto');
     playCallSound('join_call');
     socketRef.current?.emit('dm:call:accept', { dmChannelId: call.dmChannelId });
+  }
+
+  // All SDP operations on the DM call PC run through this single chain. Socket
+  // handlers are async and fire concurrently — two interleaved setLocal/RemoteDescription
+  // calls throw InvalidStateError and wedge negotiation permanently. The chain lives
+  // in a ref (NOT on the call object: call objects are replaced by spreads on every
+  // state update, so a chain stored there can silently fork). Only one DM call exists
+  // at a time; ops guard on dmChannelId and the chain resets on teardown.
+  function queueDmSdpOp(op: () => Promise<void>): Promise<void> {
+    const chain = dmSdpChainRef.current
+      .then(op)
+      .catch((err) => console.error('[DM call] SDP op failed:', err));
+    dmSdpChainRef.current = chain;
+    return chain;
   }
 
   function buildDmPeerConnection(iceServers: RTCIceServer[], dmChannelId: string, localStream: MediaStream | null): RTCPeerConnection {
@@ -2657,29 +2706,37 @@ export default function App() {
       } else {
         // New stream = peer started screen sharing
         setDmCall((prev) => prev ? { ...prev, peerScreenStream: stream } : prev);
-        track.onended = () => setDmCall((prev) => prev ? { ...prev, peerScreenStream: null } : prev);
+        const clearScreen = () => setDmCall((prev) => prev ? { ...prev, peerScreenStream: null } : prev);
+        track.onended = clearScreen;
+        // A remote removeTrack (peer pressed "stop sharing") doesn't fire onended on
+        // the receiving track — the renegotiated SDP removes it from the stream and
+        // fires removetrack instead. Without this the last frame stays frozen.
+        stream.onremovetrack = () => {
+          if (stream.getVideoTracks().length === 0) clearScreen();
+        };
       }
     };
 
-    // Renegotiation for mid-call changes (screen share start/stop).
-    // Guard: only renegotiate when already active — initial offer is sent manually.
-    let isNegotiating = false;
-    pc.onnegotiationneeded = async () => {
+    // Perfect negotiation: ALL offers (initial + screen share/camera renegotiation)
+    // originate here. Fires after addTrack at build time and again whenever tracks
+    // change mid-call. Serialized through queueDmSdpOp like every other SDP op.
+    pc.onnegotiationneeded = () => {
       const call = dmCallRef.current;
-      if (!call || call.status !== 'active') return;
-      if (isNegotiating) return;
-      isNegotiating = true;
-      try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
+      if (!call || (call.status !== 'connecting' && call.status !== 'active')) return;
+      // Callee holds its initial offer until the caller's has landed — otherwise both
+      // sides always open with a glare collision. Re-fires automatically after the
+      // initial exchange if the callee still has unsent tracks (e.g. camera vs
+      // audio-only caller), so nothing is lost by waiting.
+      if (!call.isCaller && !pc.remoteDescription) return;
+      queueDmSdpOp(async () => {
+        // Re-check inside the chain — a queued op may run after a glare rollback or
+        // teardown changed the world. setLocalDescription() only offers from stable.
+        if (pc.signalingState !== 'stable') return;
+        await pc.setLocalDescription(); // implicit createOffer
         if (pc.localDescription) {
           socketRef.current?.emit('dm:call:offer', { dmChannelId, sdp: pc.localDescription });
         }
-      } catch (err) {
-        console.error('[DM renegotiation] offer failed:', err);
-      } finally {
-        isNegotiating = false;
-      }
+      });
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -2727,11 +2784,38 @@ export default function App() {
     playCallSound(newMuted ? 'mute' : 'unmute');
   }
 
-  function toggleDmVideo() {
+  async function toggleDmVideo() {
     const call = dmCallRef.current;
     if (!call?.localStream) return;
+    const vTracks = call.localStream.getVideoTracks();
+    if (vTracks.length === 0) {
+      // Call started audio-only — there is no video track to enable. Acquire the
+      // camera now; addTrack fires onnegotiationneeded so the peer receives it.
+      try {
+        const cam = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        });
+        const track = cam.getVideoTracks()[0];
+        if (!track) return;
+        // Same guard pattern as elsewhere: the call may have ended while the
+        // permission prompt was open.
+        const live = dmCallRef.current;
+        if (!live || live.dmChannelId !== call.dmChannelId || !live.pc) {
+          track.stop();
+          return;
+        }
+        live.localStream!.addTrack(track);
+        live.pc.addTrack(track, live.localStream!);
+        const updated = { ...live, isVideoOff: false, hasVideo: true };
+        dmCallRef.current = updated;
+        setDmCall(updated);
+      } catch (err) {
+        console.error('[DM call] mid-call camera acquire failed:', err);
+      }
+      return;
+    }
     const newOff = !call.isVideoOff;
-    call.localStream.getVideoTracks().forEach((t) => { t.enabled = !newOff; });
+    vTracks.forEach((t) => { t.enabled = !newOff; });
     setDmCall((prev) => prev ? { ...prev, isVideoOff: newOff } : prev);
   }
 
@@ -3348,6 +3432,7 @@ export default function App() {
           )}
 
           {activeDm ? (
+            <>
             <DmView
               dm={activeDm}
               messages={dmMessages[activeDm.id] ?? []}
@@ -3370,6 +3455,23 @@ export default function App() {
               peerKeyChanged={peerKeyChanged.has(activeDm.otherUserId)}
               onAcceptPeerKey={() => handleAcceptPeerKey(activeDm.id)}
             />
+            {/* Docked call panel — desktop, while viewing the DM the call belongs to */}
+            {dmCall && dmCall.dmChannelId === activeDm.id && dmCall.status !== 'incoming-ringing' && (
+              <DmCallDock
+                call={dmCall}
+                myName={user.displayName}
+                myAvatarUrl={user.avatarUrl ?? null}
+                myId={user.id}
+                onMute={toggleDmMute}
+                onToggleVideo={toggleDmVideo}
+                onScreenShare={startDmScreenShare}
+                onStopScreenShare={stopDmScreenShare}
+                onSetPeerVolume={setDmPeerVolume}
+                onHangUp={hangUpDmCall}
+                onFullscreen={(focus) => { setDmCallFocus(focus); setDmCallFullscreen(true); }}
+              />
+            )}
+            </>
           ) : (
             <div className="flex-1 grid place-items-center text-ink-300 text-sm px-4 text-center">
               <div className="flex flex-col items-center gap-3">
@@ -3679,13 +3781,20 @@ export default function App() {
         />
       )}
 
-      {/* DM call window — floating, draggable, shown for all active call states */}
+      {/* DM call overlay — owns the peer <audio> element; renders the fullscreen
+          stage when toggled, otherwise a floating pill (hidden on desktop while
+          the docked panel is visible in the DM view) */}
       {dmCall && dmCall.status !== 'incoming-ringing' && (
-        <DmCallWindow
+        <DmCallOverlay
           call={dmCall}
           myName={user.displayName}
           myAvatarUrl={user.avatarUrl ?? null}
           myId={user.id}
+          fullscreen={dmCallFullscreen}
+          focus={dmCallFocus}
+          dockVisible={view === 'dm' && activeDmId === dmCall.dmChannelId}
+          onSetFullscreen={setDmCallFullscreen}
+          onSetFocus={setDmCallFocus}
           onMute={toggleDmMute}
           onToggleVideo={toggleDmVideo}
           onScreenShare={startDmScreenShare}
