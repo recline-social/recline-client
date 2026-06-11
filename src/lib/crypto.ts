@@ -621,8 +621,34 @@ export function clearAllDmKeys() {
   toDelete.forEach((k) => sessionStorage.removeItem(k));
   // Wipe all ECDH keypairs from IndexedDB on logout so a shared-device scenario
   // cannot recover keys after the user signs out. (#H-6)
+  // NOTE: idbClear() is fire-and-forget here (logout path) — the app is about to tear
+  // down anyway, so the race between clear and subsequent writes doesn't matter.
   idbClear().catch(() => {});
   // Also clear any legacy localStorage keys that survived migration
+  localStorage.removeItem('recline.dm.keypair');
+  localStorage.removeItem('recline.dm.keypair.history');
+}
+
+/**
+ * Properly-awaited identity key wipe for the explicit "Reset DM key" path.
+ *
+ * Unlike clearAllDmKeys() — which fires idbClear() without await — this function
+ * awaits the IndexedDB clear so there is no race between the store being wiped and
+ * saveDmKeyPair() writing the new key immediately after.
+ *
+ * Do NOT use this on the logout path; clearAllDmKeys() is correct there since the
+ * app is tearing down and a race is harmless.
+ */
+export async function wipeDmIdentityKeysForReset(): Promise<void> {
+  dmMemoryKeys.clear();
+  const toDelete: string[] = [];
+  for (let i = 0; i < sessionStorage.length; i++) {
+    const k = sessionStorage.key(i);
+    if (k?.startsWith(DM_AESKEY_PREFIX)) toDelete.push(k);
+  }
+  toDelete.forEach((k) => sessionStorage.removeItem(k));
+  // Await IDB clear so saveDmKeyPair() called immediately after sees a clean store.
+  await idbClear();
   localStorage.removeItem('recline.dm.keypair');
   localStorage.removeItem('recline.dm.keypair.history');
 }
