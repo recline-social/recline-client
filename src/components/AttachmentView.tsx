@@ -7,14 +7,18 @@ function fmtBytes(b: number): string {
   return `${(b / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// URL safety guard — prevents javascript: and data: URIs from server-supplied URLs.
+// URL safety guard — only permits same-origin /uploads/ paths and local blob: URLs.
+// Rejecting arbitrary external https:// URLs prevents server-supplied attachments
+// from leaking the user's IP or session info to third-party hosts.
 function isSafeUrl(url: string | null | undefined): boolean {
   if (!url) return false;
   if (url.startsWith('/uploads/')) return true;
   if (url.startsWith('blob:')) return true;
+  // Allow fully-qualified URLs only when they resolve to our own origin's /uploads/ path
+  // (e.g. when the app is accessed via a CDN-rewritten origin that differs from window.location).
   try {
     const u = new URL(url);
-    return u.protocol === 'https:' || u.protocol === 'http:';
+    return u.origin === window.location.origin && u.pathname.startsWith('/uploads/');
   } catch {
     return false;
   }
@@ -45,9 +49,10 @@ export function AttachmentView({ url, name, size, type }: Props) {
         href={isSafeUrl(url) ? url : '#'}
         target="_blank"
         rel="noopener noreferrer"
+        referrerPolicy="no-referrer"
         className="block mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06] hover:border-white/10 transition-colors"
       >
-        <img src={isSafeUrl(url) ? url : undefined} alt={name} className="w-full max-h-64 object-contain bg-black/20" loading="lazy" />
+        <img src={isSafeUrl(url) ? url : undefined} alt={name} className="w-full max-h-64 object-contain bg-black/20" loading="lazy" referrerPolicy="no-referrer" />
         <div className="px-2.5 py-1.5 bg-ink-800/60 flex items-center gap-2">
           <span className="text-[11px] text-ink-300 truncate flex-1">{name}</span>
           <span className="text-[10px] text-ink-500 shrink-0">{fmtBytes(size)}</span>
@@ -89,6 +94,7 @@ export function AttachmentView({ url, name, size, type }: Props) {
       download={name}
       target="_blank"
       rel="noopener noreferrer"
+      referrerPolicy="no-referrer"
       className="mt-1.5 flex items-center gap-3 max-w-sm rounded-xl border border-white/[0.06] bg-ink-800/60 px-3 py-2.5 hover:bg-ink-700/60 hover:border-white/10 transition-colors"
     >
       <span className="text-2xl shrink-0">{fileIcon(type)}</span>

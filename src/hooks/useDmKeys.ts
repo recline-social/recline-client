@@ -16,6 +16,7 @@ import {
   getCachedDmKey,
   clearDmKey,
   clearAllDmKeys,
+  clearDmAesKeyCache,
   archiveCurrentKeyPair,
   loadDmKeyHistory,
   fingerprintJwk,
@@ -417,11 +418,21 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
         // be encrypted with an old password or old key.  Previously we only uploaded when
         // no backup existed, which left stale v1/v2 blobs on the server forever after a
         // password change or key rotation, breaking cross-device sync on the other device.
+        // Fetch any existing backup first to preserve its rotation history chain —
+        // without this, a v3 backup's history[] is erased on the very next normal login.
         if (password) {
           try {
             const privJwk = await exportPrivateKeyJwk(pair.privateKey);
             if (privJwk) {
-              const blob = await encryptDmKeyBackup(privJwk, password);
+              let historyJwks: JsonWebKey[] = [];
+              try {
+                const { backup: oldBlob } = await api.getDmKeyBackup(password, authKdfSalt);
+                if (oldBlob) {
+                  const old = await decryptDmKeyBackupJwks(oldBlob, password);
+                  if (old) historyJwks = old.history;
+                }
+              } catch { /* no existing backup or wrong password — non-fatal, history stays empty */ }
+              const blob = await encryptDmKeyBackup(privJwk, password, historyJwks);
               await api.putDmKeyBackup(blob);
             }
           } catch { /* non-fatal */ }
@@ -440,7 +451,17 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
           try {
             const privJwk = await exportPrivateKeyJwk(pair.privateKey);
             if (privJwk) {
-              const blob = await encryptDmKeyBackup(privJwk, password);
+              // Preserve any existing backup history (server may have no key registered
+              // but could still have a backup blob from a previous session).
+              let historyJwks: JsonWebKey[] = [];
+              try {
+                const { backup: oldBlob } = await api.getDmKeyBackup(password, authKdfSalt);
+                if (oldBlob) {
+                  const old = await decryptDmKeyBackupJwks(oldBlob, password);
+                  if (old) historyJwks = old.history;
+                }
+              } catch { /* non-fatal */ }
+              const blob = await encryptDmKeyBackup(privJwk, password, historyJwks);
               await api.putDmKeyBackup(blob);
             }
           } catch { /* non-fatal */ }
@@ -581,7 +602,8 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     if (!restored) throw new Error('Wrong password or corrupted backup.');
     await saveDmKeyPair(restored);
     dmKeyPairRef.current = restored;
-    clearAllDmKeys();
+    // Flush only the derived AES cache — NOT IndexedDB, which now holds the restored key.
+    clearDmAesKeyCache();
     setDmMsgLoaded({});
     setDmMessages({});
     const pubJwk = await exportPublicKeyJwk(restored.publicKey);
@@ -635,8 +657,9 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       // CRYPTO-005: prevents stolen-session MITM attacks.
       await api.registerPublicKey(pubJwk, password); // throws on network/server error
 
-      // Step 7: flush cached AES-GCM keys so they are re-derived from the new private key
-      clearAllDmKeys();
+      // Step 7: flush cached AES-GCM keys so they are re-derived from the new private key.
+      // Use the AES-only clear — NOT clearAllDmKeys(), which would wipe the new IDB key pair.
+      clearDmAesKeyCache();
       // BUG 3: mirror handleSyncDmKey — clear stale decrypted DM messages after rotation
       setDmMsgLoaded({});
       setDmMessages({});

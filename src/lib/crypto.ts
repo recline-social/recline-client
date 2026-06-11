@@ -17,7 +17,7 @@ export function generateAuthSalt(): string {
  * the plaintext password never leaves the device.
  *
  * Output: lowercase hex string (64 chars = 32 bytes).
- * Algorithm: PBKDF2-SHA256, 100k iterations, via WebCrypto (native speed).
+ * Algorithm: PBKDF2-SHA256, 210k iterations, via WebCrypto (native speed).
  */
 export async function deriveAuthKey(password: string, saltHex: string): Promise<string> {
   const saltBytes = new Uint8Array(saltHex.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
@@ -593,6 +593,22 @@ export function clearDmKey(dmChannelId: string) {
   dmMemoryKeys.delete(dmChannelId);
   // Also remove any legacy sessionStorage entry from the old scheme (pre-memory-only migration)
   sessionStorage.removeItem(DM_AESKEY_PREFIX + dmChannelId);
+}
+
+/**
+ * Flush only the in-memory AES-GCM key cache and any sessionStorage AES entries.
+ * Does NOT touch IndexedDB — safe to call after a sync or rotation so the new
+ * keys are re-derived on next use without losing the ECDH identity key pair.
+ * Use clearAllDmKeys() only on full logout to also wipe the IDB identity keys.
+ */
+export function clearDmAesKeyCache(): void {
+  dmMemoryKeys.clear();
+  const toDelete: string[] = [];
+  for (let i = 0; i < sessionStorage.length; i++) {
+    const k = sessionStorage.key(i);
+    if (k?.startsWith(DM_AESKEY_PREFIX)) toDelete.push(k);
+  }
+  toDelete.forEach((k) => sessionStorage.removeItem(k));
 }
 
 export function clearAllDmKeys() {

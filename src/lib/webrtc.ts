@@ -490,7 +490,9 @@ export class CallManager {
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
         video: Object.keys(video).length ? video : true,
-        audio: opts.captureAudio !== false,
+        // Default to no audio capture — prevents accidental microphone inclusion
+        // when a user shares their screen. Callers must explicitly pass captureAudio:true.
+        audio: !!opts.captureAudio,
       });
     } catch (err) {
       // user denied / closed picker — surface a clean failure

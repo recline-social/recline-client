@@ -573,8 +573,12 @@ export function Auth({ onAuthed }: Props) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder={mode === 'signup' ? 'at least 8 characters' : ''}
+              minLength={mode === 'signup' ? 8 : undefined}
               required
             />
+            {mode === 'signup' && password.length > 0 && password.length < 8 && (
+              <p className="text-[11px] text-rose-400 mt-0.5">Password must be at least 8 characters</p>
+            )}
           </label>
 
           {error && (
@@ -593,7 +597,7 @@ export function Auth({ onAuthed }: Props) {
           <button
             type="submit"
             className="btn-primary w-full !py-2 disabled:opacity-40 disabled:cursor-not-allowed"
-            disabled={loading || !tsReady}
+            disabled={loading || !tsReady || (mode === 'signup' && password.length > 0 && password.length < 8)}
           >
             {loading ? 'Working…' : mode === 'login' ? 'Log in' : 'Create account'}
           </button>
