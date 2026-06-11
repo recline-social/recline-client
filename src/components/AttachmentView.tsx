@@ -1,26 +1,38 @@
 // Shared file attachment renderer — replaces the duplicated FileAttachmentView
 // that used to live in both MessageRow and DmView.
 
+import { getServerUrl } from '../lib/serverUrl';
+
 function fmtBytes(b: number): string {
   if (b < 1024) return `${b} B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
   return `${(b / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// URL safety guard — only permits same-origin /uploads/ paths and local blob: URLs.
-// Rejecting arbitrary external https:// URLs prevents server-supplied attachments
-// from leaking the user's IP or session info to third-party hosts.
-function isSafeUrl(url: string | null | undefined): boolean {
-  if (!url) return false;
-  if (url.startsWith('/uploads/')) return true;
-  if (url.startsWith('blob:')) return true;
-  // Allow fully-qualified URLs only when they resolve to our own origin's /uploads/ path
-  // (e.g. when the app is accessed via a CDN-rewritten origin that differs from window.location).
+/**
+ * Normalize a raw attachment URL to a safe, absolute URL restricted to /uploads/ paths.
+ * Returns null for anything that resolves outside the allowed origins.
+ *
+ * Two permitted origins:
+ *   • window.location.origin — web build (same-origin relative paths)
+ *   • getServerUrl() origin  — native Tauri/Capacitor (API host may differ from webview origin)
+ *
+ * blob: URLs are always allowed (local object URLs from in-progress uploads).
+ */
+function safeAttachmentUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  if (raw.startsWith('blob:')) return raw;
   try {
-    const u = new URL(url);
-    return u.origin === window.location.origin && u.pathname.startsWith('/uploads/');
+    const appOrigin = window.location.origin;
+    const apiBase = getServerUrl() || appOrigin;
+    const apiOrigin = new URL(apiBase, appOrigin).origin;
+    // Resolve relative paths against the API origin so /uploads/... works in native builds.
+    const u = new URL(raw, apiOrigin);
+    if (!u.pathname.startsWith('/uploads/')) return null;
+    if (u.origin !== appOrigin && u.origin !== apiOrigin) return null;
+    return u.href;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -39,6 +51,7 @@ type Props = {
 };
 
 export function AttachmentView({ url, name, size, type }: Props) {
+  const safeUrl = safeAttachmentUrl(url);
   const isImage = type.startsWith('image/');
   const isVideo = type.startsWith('video/');
   const isAudio = type.startsWith('audio/');
@@ -46,13 +59,13 @@ export function AttachmentView({ url, name, size, type }: Props) {
   if (isImage) {
     return (
       <a
-        href={isSafeUrl(url) ? url : '#'}
+        href={safeUrl ?? '#'}
         target="_blank"
         rel="noopener noreferrer"
         referrerPolicy="no-referrer"
         className="block mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06] hover:border-white/10 transition-colors"
       >
-        <img src={isSafeUrl(url) ? url : undefined} alt={name} className="w-full max-h-64 object-contain bg-black/20" loading="lazy" referrerPolicy="no-referrer" />
+        <img src={safeUrl ?? undefined} alt={name} className="w-full max-h-64 object-contain bg-black/20" loading="lazy" referrerPolicy="no-referrer" />
         <div className="px-2.5 py-1.5 bg-ink-800/60 flex items-center gap-2">
           <span className="text-[11px] text-ink-300 truncate flex-1">{name}</span>
           <span className="text-[10px] text-ink-500 shrink-0">{fmtBytes(size)}</span>
@@ -64,7 +77,7 @@ export function AttachmentView({ url, name, size, type }: Props) {
   if (isVideo) {
     return (
       <div className="mt-1.5 rounded-xl overflow-hidden max-w-sm border border-white/[0.06]">
-        <video src={isSafeUrl(url) ? url : undefined} controls preload="metadata" className="w-full max-h-64 bg-black" style={{ display: 'block' }} />
+        <video src={safeUrl ?? undefined} controls preload="metadata" className="w-full max-h-64 bg-black" style={{ display: 'block' }} />
         <div className="px-2.5 py-1.5 bg-ink-800/60 flex items-center gap-2">
           <span className="text-[11px] text-ink-300 truncate flex-1">{name}</span>
           <span className="text-[10px] text-ink-500 shrink-0">{fmtBytes(size)}</span>
@@ -83,14 +96,14 @@ export function AttachmentView({ url, name, size, type }: Props) {
             <p className="text-[10px] text-ink-400">{fmtBytes(size)}</p>
           </div>
         </div>
-        <audio src={isSafeUrl(url) ? url : undefined} controls preload="metadata" className="w-full h-8" style={{ display: 'block' }} />
+        <audio src={safeUrl ?? undefined} controls preload="metadata" className="w-full h-8" style={{ display: 'block' }} />
       </div>
     );
   }
 
   return (
     <a
-      href={isSafeUrl(url) ? url : '#'}
+      href={safeUrl ?? '#'}
       download={name}
       target="_blank"
       rel="noopener noreferrer"

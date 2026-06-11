@@ -18,6 +18,21 @@ function sanitizePushField(value, maxLen, fallback) {
   return value.length > maxLen ? value.slice(0, maxLen) : value;
 }
 
+/**
+ * Resolve a notification URL to a same-origin absolute URL.
+ * Rejects anything that resolves to a different origin (prevents open-redirect
+ * via crafted push payloads) and falls back to the app root on any failure.
+ */
+function safeNotificationUrl(rawUrl) {
+  try {
+    const u = new URL(String(rawUrl || '/'), self.location.origin);
+    if (u.origin !== self.location.origin) return self.location.origin + '/';
+    return u.href;
+  } catch {
+    return self.location.origin + '/';
+  }
+}
+
 self.addEventListener('push', (event) => {
   if (!event.data) return;
 
@@ -52,11 +67,9 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
   const rawUrl = event.notification.data?.url ?? '/';
-  // Validate: only allow relative paths or https:// — reject http:// to prevent
-  // unencrypted navigation from a push payload, and block javascript: URIs.
-  const targetUrl = (rawUrl.startsWith('/') || rawUrl.startsWith('https://'))
-    ? rawUrl
-    : '/';
+  // Validate: only navigate to same-origin URLs so a crafted push payload cannot
+  // redirect users to an external site. javascript: and data: URIs are also blocked.
+  const targetUrl = safeNotificationUrl(rawUrl);
 
   // FEAT-003: prefer a window already at the target URL so the user lands in context
   // rather than being bounced to a random already-open tab.

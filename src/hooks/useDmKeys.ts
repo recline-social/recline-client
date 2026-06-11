@@ -39,6 +39,39 @@ function jwkPointMatches(a: string | null, b: string | null): boolean {
   } catch { return false; }
 }
 
+/** Stable string key for an EC JWK by its curve point (works for both pub and priv JWKs). */
+function jwkPoint(jwk: JsonWebKey): string {
+  return `${String(jwk.crv)}:${String(jwk.x)}:${String(jwk.y)}`;
+}
+
+/**
+ * Build the history array for a new backup, incorporating any chained history
+ * from an existing backup while deduplicating against the new current key.
+ *
+ * Uses the same logic as rotation (carry old priv + its predecessors) so that
+ * normal-login re-uploads don't silently erase old epochs — including the case
+ * where decryptDmKeyBackupJwks returns a v1/v2 blob with history:[] but a
+ * non-current old.priv that must still be chained.
+ *
+ * @param old      Decrypted old backup JWKs, or null if no backup exists yet.
+ * @param currentKey  The new current private JWK (or public JWK — only x/y used for dedup).
+ */
+function preservedHistory(
+  old: { priv: JsonWebKey; history: JsonWebKey[] } | null,
+  currentKey: JsonWebKey,
+): JsonWebKey[] {
+  if (!old) return [];
+  const seen = new Set<string>([jwkPoint(currentKey)]);
+  const out: JsonWebKey[] = [];
+  for (const jwk of [old.priv, ...old.history]) {
+    const p = jwkPoint(jwk);
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(jwk);
+  }
+  return out;
+}
+
 export type UseDmKeysParams = {
   user: User | null;
   /** Fresh DM list accessible in socket callbacks without stale-closure issues. */
@@ -414,27 +447,38 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
         dmKeyPairRef.current = pair;
         setDmKeysReady(true);
         setDmMsgLoaded({});
-        // Always upload a fresh backup on login — overwrites any stale backup that may
-        // be encrypted with an old password or old key.  Previously we only uploaded when
-        // no backup existed, which left stale v1/v2 blobs on the server forever after a
-        // password change or key rotation, breaking cross-device sync on the other device.
-        // Fetch any existing backup first to preserve its rotation history chain —
-        // without this, a v3 backup's history[] is erased on the very next normal login.
+        // Always upload a fresh backup on login — re-encrypts with current password and
+        // preserves the full key rotation history chain so devices that haven't synced
+        // yet can still decrypt messages from previous key epochs.
         if (password) {
           try {
-            const privJwk = await exportPrivateKeyJwk(pair.privateKey);
+            // Try to export the IDB private key. saveDmKeyPair() stores it as
+            // non-extractable, so this returns null for already-persisted keys.
+            let privJwk = await exportPrivateKeyJwk(pair.privateKey);
+
+            // Fetch the existing backup before overwriting — we need it to:
+            //   (a) preserve history[], and
+            //   (b) recover privJwk when the IDB key is non-extractable.
+            let old: { priv: JsonWebKey; history: JsonWebKey[] } | null = null;
+            try {
+              const { backup: oldBlob } = await api.getDmKeyBackup(password, authKdfSalt);
+              if (oldBlob) old = await decryptDmKeyBackupJwks(oldBlob, password);
+            } catch { /* no existing backup or wrong password — non-fatal */ }
+
+            // If IDB key is non-extractable but the backup's priv matches our public key,
+            // re-use the backup's private JWK so we can still write an updated blob.
+            if (!privJwk && old && jwkPointMatches(JSON.stringify(old.priv), localJwk)) {
+              privJwk = old.priv;
+            }
+
             if (privJwk) {
-              let historyJwks: JsonWebKey[] = [];
-              try {
-                const { backup: oldBlob } = await api.getDmKeyBackup(password, authKdfSalt);
-                if (oldBlob) {
-                  const old = await decryptDmKeyBackupJwks(oldBlob, password);
-                  if (old) historyJwks = old.history;
-                }
-              } catch { /* no existing backup or wrong password — non-fatal, history stays empty */ }
+              const currentJwk = JSON.parse(localJwk) as JsonWebKey;
+              const historyJwks = preservedHistory(old, currentJwk);
               const blob = await encryptDmKeyBackup(privJwk, password, historyJwks);
               await api.putDmKeyBackup(blob);
             }
+            // If privJwk is still null here (non-extractable IDB key, no matching backup),
+            // we can't produce a backup this session — non-fatal, user can rotate to create one.
           } catch { /* non-fatal */ }
         }
         return;
@@ -449,18 +493,18 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
         setDmMsgLoaded({});
         if (password) {
           try {
-            const privJwk = await exportPrivateKeyJwk(pair.privateKey);
+            let privJwk = await exportPrivateKeyJwk(pair.privateKey);
+            let old: { priv: JsonWebKey; history: JsonWebKey[] } | null = null;
+            try {
+              const { backup: oldBlob } = await api.getDmKeyBackup(password, authKdfSalt);
+              if (oldBlob) old = await decryptDmKeyBackupJwks(oldBlob, password);
+            } catch { /* non-fatal */ }
+            if (!privJwk && old && jwkPointMatches(JSON.stringify(old.priv), localJwk)) {
+              privJwk = old.priv;
+            }
             if (privJwk) {
-              // Preserve any existing backup history (server may have no key registered
-              // but could still have a backup blob from a previous session).
-              let historyJwks: JsonWebKey[] = [];
-              try {
-                const { backup: oldBlob } = await api.getDmKeyBackup(password, authKdfSalt);
-                if (oldBlob) {
-                  const old = await decryptDmKeyBackupJwks(oldBlob, password);
-                  if (old) historyJwks = old.history;
-                }
-              } catch { /* non-fatal */ }
+              const currentJwk = JSON.parse(localJwk) as JsonWebKey;
+              const historyJwks = preservedHistory(old, currentJwk);
               const blob = await encryptDmKeyBackup(privJwk, password, historyJwks);
               await api.putDmKeyBackup(blob);
             }
@@ -486,7 +530,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
           pair = restored;
           // If the restored key already matches the server key, no re-registration needed.
           if (!jwkPointMatches(restoredJwk, serverKeyJwk)) {
-            await api.registerPublicKey(restoredJwk, password).catch(() => {});
+            await api.registerPublicKey(restoredJwk, { password, authKdfSalt }).catch(() => {});
           }
           dmKeyPairRef.current = pair;
           setDmKeyMismatch(false);
@@ -496,7 +540,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
         }
 
         // Priority 2: force-register local key with password + upload fresh backup.
-        await api.registerPublicKey(localJwk, password).catch((err) => {
+        await api.registerPublicKey(localJwk, { password, authKdfSalt }).catch((err) => {
           console.error('[DM keys] Failed to re-register local key:', err);
           throw err;
         });
@@ -538,8 +582,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
             setDmMsgLoaded({});
             const restoredJwk = await exportPublicKeyJwk(restored.publicKey);
             if (!jwkPointMatches(restoredJwk, serverKeyJwk)) {
-              // BUG 7: pass password so server can verify ownership before overwriting existing key
-              await api.registerPublicKey(restoredJwk, password).catch(() => {});
+              await api.registerPublicKey(restoredJwk, { password, authKdfSalt }).catch(() => {});
             }
             return;
           }
@@ -567,7 +610,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
         setDmKeyMismatch(false);
       } else if (password) {
         // Server has a different key — override with password.
-        await api.registerPublicKey(freshJwk, password);
+        await api.registerPublicKey(freshJwk, { password, authKdfSalt });
         setDmKeyMismatch(false);
       } else {
         // Server has a key we can't override without credentials.
@@ -607,8 +650,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     setDmMsgLoaded({});
     setDmMessages({});
     const pubJwk = await exportPublicKeyJwk(restored.publicKey);
-    // BUG 6: pass password so the server can verify ownership before overwriting an existing key
-    await api.registerPublicKey(pubJwk, password).catch(() => {});
+    await api.registerPublicKey(pubJwk, { password, authKdfSalt: user?.authKdfSalt ?? null }).catch(() => {});
     setDmKeyMismatch(false);
     // Clear backup-out-of-sync flag now that sync succeeded
     setDmBackupOutOfSync(false);
@@ -655,7 +697,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
 
       // Step 6: register new public key on the server (password required to override existing key)
       // CRYPTO-005: prevents stolen-session MITM attacks.
-      await api.registerPublicKey(pubJwk, password); // throws on network/server error
+      await api.registerPublicKey(pubJwk, { password, authKdfSalt: user?.authKdfSalt ?? null }); // throws on network/server error
 
       // Step 7: flush cached AES-GCM keys so they are re-derived from the new private key.
       // Use the AES-only clear — NOT clearAllDmKeys(), which would wipe the new IDB key pair.

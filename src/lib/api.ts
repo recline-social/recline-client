@@ -272,11 +272,28 @@ export const api = {
       `/api/auth/salt?username=${encodeURIComponent(username.trim().toLowerCase())}`,
     ),
 
-  registerPublicKey: (jwkString: string, password?: string) =>
-    request<{ ok: boolean }>('/api/auth/me/public-key', {
-      method: 'PUT',
-      body: JSON.stringify({ publicKey: jwkString, ...(password ? { password } : {}) }),
-    }),
+  registerPublicKey: (jwkString: string, auth?: { password: string; authKdfSalt?: string | null }) => {
+    // v2 clients derive the auth key client-side — raw password never leaves the device.
+    // v1/legacy clients (no authKdfSalt) send raw password for one-time migration only.
+    async function buildBody(): Promise<Record<string, string>> {
+      const body: Record<string, string> = { publicKey: jwkString };
+      if (auth?.password) {
+        if (auth.authKdfSalt) {
+          const { deriveAuthKey } = await import('./crypto');
+          body.authDerivedKey = await deriveAuthKey(auth.password, auth.authKdfSalt);
+        } else {
+          body.password = auth.password; // v1 legacy fallback
+        }
+      }
+      return body;
+    }
+    return buildBody().then((body) =>
+      request<{ ok: boolean }>('/api/auth/me/public-key', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    );
+  },
 
   /** Fetch your own currently registered ECDH public key (null if not registered yet). */
   getMyPublicKey: () =>

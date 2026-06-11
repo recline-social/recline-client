@@ -871,13 +871,19 @@ export class CallManager {
   /** REL-023: pull fresh ICE servers (new time-limited TURN creds) from the
    *  server so an ICE restart isn't gathering candidates against expired creds. */
   private async refreshIceServers(): Promise<void> {
+    if (!this.channelId || !this.callToken) return;
     try {
       const fresh = await new Promise<RTCIceServer[] | null>((resolve) => {
         const t = setTimeout(() => resolve(null), 5_000);
-        this.socket.emit('call:ice-servers', (resp: { iceServers?: RTCIceServer[] }) => {
-          clearTimeout(t);
-          resolve(resp?.iceServers ?? null);
-        });
+        this.socket.emit(
+          'call:ice-servers',
+          { channelId: this.channelId, callToken: this.callToken },
+          (resp: { iceServers?: RTCIceServer[]; error?: string }) => {
+            clearTimeout(t);
+            if (resp?.error) resolve(null);
+            else resolve(resp?.iceServers ?? null);
+          },
+        );
       });
       if (fresh?.length) this.iceServers = fresh;
     } catch { /* keep existing iceServers */ }
