@@ -80,6 +80,7 @@ export function ChatPanel({
   const [showPins, setShowPins] = useState(false);
   const loadingMoreRef = useRef(false);
   const prevScrollHeightRef = useRef(0);
+  const prevChannelIdRef = useRef(channel.id);
   const [replyingTo, setReplyingTo] = useState<ReplyingTo | null>(null);
 
   // ── Panel-level drag-and-drop ──────────────────────────────────────────────
@@ -110,14 +111,21 @@ export function ChatPanel({
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    const channelChanged = prevChannelIdRef.current !== channel.id;
+    prevChannelIdRef.current = channel.id;
     if (loadingMoreRef.current) {
       el.scrollTop = el.scrollHeight - prevScrollHeightRef.current;
       loadingMoreRef.current = false;
-    } else {
+    } else if (channelChanged) {
       el.scrollTop = el.scrollHeight;
+    } else {
+      // Only auto-scroll if the user is already near the bottom; don't yank
+      // them away while reading older messages.
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distanceFromBottom < 80) el.scrollTop = el.scrollHeight;
     }
-    // Clear reply bar when switching channels
-    setReplyingTo(null);
+    // Clear reply bar only when switching channels
+    if (channelChanged) setReplyingTo(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length, channel.id]);
 

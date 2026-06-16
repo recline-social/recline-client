@@ -566,6 +566,10 @@ export default function App() {
   useEffect(() => {
     activeDmIdRef.current = activeDmId;
   }, [activeDmId]);
+  const activeServerIdRef = useRef(activeServerId);
+  useEffect(() => {
+    activeServerIdRef.current = activeServerId;
+  }, [activeServerId]);
   const viewRef = useRef(view);
   useEffect(() => {
     viewRef.current = view;
@@ -787,7 +791,7 @@ export default function App() {
       // Clear stale presence — server will re-emit currently online shared users
       setOnline(new Set());
       // Re-emit current focus so the server has up-to-date state after reconnect
-      const serverId = viewRef.current === 'dm' ? null : (activeServerId ?? null);
+      const serverId = viewRef.current === 'dm' ? null : (activeServerIdRef.current ?? null);
       s.emit('server:focus', { serverId });
     };
     const onDisconnect = () => {
@@ -902,11 +906,13 @@ export default function App() {
           }
           return 'Someone';
         })();
-        const channelName = lookupChannel(msg.channelId)?.name ?? 'unknown';
+        const channelMeta = lookupChannel(msg.channelId);
+        const channelName = channelMeta?.name ?? 'unknown';
         const displayName = userRef.current?.displayName ?? '';
+        const meId = userRef.current?.id ?? '';
         const isMention = !failed && displayName !== '' && (
-          body.includes(`@${displayName}`) ||
-          body.includes(`@[${displayName}]`)
+          env.text.includes(`@${displayName}`) ||
+          (meId !== '' && env.text.includes(`@[${displayName}](${meId})`))
         );
 
         if (!isFocused || isMention) {
@@ -917,6 +923,11 @@ export default function App() {
             `New message in #${channelName}`,
             {
               tag: msg.channelId,
+              onClick: () => {
+                setView('server');
+                if (channelMeta?.server_id) setActiveServerId(channelMeta.server_id);
+                setActiveChannelId(msg.channelId);
+              },
             },
           );
         }
@@ -1260,7 +1271,13 @@ export default function App() {
           showNotification(
             `New message from ${dmChannel?.otherDisplayName ?? 'Someone'}`,
             'New message',
-            { tag: `dm:${decoded.dmChannelId}` },
+            {
+              tag: `dm:${decoded.dmChannelId}`,
+              onClick: () => {
+                setView('dm');
+                setActiveDmId(decoded.dmChannelId);
+              },
+            },
           );
         }
       }
@@ -2631,6 +2648,10 @@ export default function App() {
   async function acceptDmCall(withVideo: boolean) {
     const call = dmCallRef.current;
     if (!call || call.status !== 'incoming-ringing') return;
+    if (inCall) {
+      console.warn('[DM call] Cannot accept DM call while in a voice channel');
+      return;
+    }
     let localStream: MediaStream | null = null;
     try {
       localStream = await navigator.mediaDevices.getUserMedia({
