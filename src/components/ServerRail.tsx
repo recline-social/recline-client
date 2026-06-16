@@ -131,36 +131,18 @@ export function ServerRail({
   return (
     <aside className="h-full w-[62px] flex flex-col items-center py-3 gap-1.5 bg-ink-950 border-r border-white/[0.09]">
 
-      {/* Recline home button — navigates to DM / home view */}
+      {/* Direct messages / home button */}
       <button
         onClick={() => onViewChange('dm')}
-        className={`h-10 w-10 grid place-items-center rounded-2xl mb-1 shrink-0 ring-1 transition-all duration-150 shadow-glow
+        className={`relative h-10 w-10 grid place-items-center rounded-2xl mb-1 shrink-0 ring-1 transition-all duration-150 shadow-glow
           ${view === 'dm'
             ? 'bg-accent-violet ring-white/20 scale-105'
             : 'bg-accent-violet/80 ring-white/10 hover:bg-accent-violet hover:ring-white/20 hover:scale-105'
           }`}
-        title="Home"
-        aria-label="Go to home / direct messages"
+        title="Direct messages"
+        aria-label="Go to direct messages"
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="11" width="18" height="11" rx="2" />
-          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-        </svg>
-      </button>
-
-      <div className="h-px w-8 bg-white/[0.07] shrink-0" />
-
-      {/* DM / Messages toggle */}
-      <button
-        onClick={() => onViewChange(view === 'dm' ? 'server' : 'dm')}
-        className={`group relative h-10 w-10 grid place-items-center rounded-xl transition-all duration-150 shrink-0 ${
-          view === 'dm'
-            ? 'bg-accent-violet/20 text-accent-violet'
-            : 'text-ink-400 hover:bg-white/[0.07] hover:text-ink-100'
-        }`}
-        title="Direct Messages"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
         {dmUnread > 0 && view !== 'dm' && (

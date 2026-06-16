@@ -37,9 +37,7 @@ const KINDS: { id: Kind; label: string; icon: React.ReactNode; placeholder: stri
 ];
 
 type FeedbackButtonProps = {
-  /** Controlled open state — owned by App so the user-menu entry can open the
-   *  modal too (the floating trigger is hidden on small screens, where it used
-   *  to sit on top of the composer's send button). */
+  /** Controlled open state — opened from the user menu in ServerRail. */
   open: boolean;
   onOpenChange: (open: boolean) => void;
 };
@@ -81,20 +79,6 @@ export function FeedbackButton({ open, onOpenChange }: FeedbackButtonProps) {
 
   return (
     <>
-      {/* Floating trigger — desktop only. On small screens this sat directly on
-          top of the composer's send button (both bottom-right), making send
-          unpressable; mobile opens the modal from the user menu instead. */}
-      <button
-        onClick={() => onOpenChange(true)}
-        title="Send feedback"
-        className="fixed bottom-5 right-5 z-50 h-10 w-10 rounded-full bg-accent-violet/20 border border-accent-violet/30 text-accent-violet hover:bg-accent-violet/30 hover:border-accent-violet/50 transition-all shadow-lg hidden md:grid place-items-center"
-        aria-label="Send feedback"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-        </svg>
-      </button>
-
       {/* Modal overlay */}
       {open && (
         <div

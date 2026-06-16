@@ -416,6 +416,21 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
   }
 
   /**
+   * Resolve authKdfSalt for password-protected DM key operations.
+   * Some login responses may not include it immediately; /api/auth/me is the
+   * source of truth for authenticated sessions.
+   */
+  async function resolveAuthKdfSalt(): Promise<string | null> {
+    if (user?.authKdfSalt) return user.authKdfSalt;
+    try {
+      const { user: me } = await api.me();
+      return me.authKdfSalt ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Set up the ECDH DM key pair on login.
    * Priority: (1) existing IndexedDB key → (2) server backup → (3) generate fresh.
    * When a key already exists locally, uploads a backup if the server has none yet.
@@ -740,7 +755,8 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
    * Clears the current local key and restores the backup using the provided password.
    */
   async function handleSyncDmKey(password: string): Promise<void> {
-    const { backup } = await api.getDmKeyBackup(password, user?.authKdfSalt ?? null);
+    const authKdfSalt = await resolveAuthKdfSalt();
+    const { backup } = await api.getDmKeyBackup(password, authKdfSalt);
     if (!backup) throw new Error('No key backup found on server. Log in on your other device first.');
     const restored = await decryptDmKeyBackup(backup, password);
     if (!restored) throw new Error('Wrong password or corrupted backup.');
@@ -767,7 +783,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
     if (currentServerKey === null) {
       // Server confirmed no key — register the restored backup key.
       // This is the required step; failure means sync cannot complete.
-      await api.registerPublicKey(pubJwk, { password, authKdfSalt: user?.authKdfSalt ?? null });
+      await api.registerPublicKey(pubJwk, { password, authKdfSalt });
     }
     // currentServerKey matched pubJwk — server already correct, no registration needed.
 

@@ -308,8 +308,7 @@ export default function App() {
   // simply appear offline so they never appear here).
   const [myStatus, setMyStatus] = useState<'online' | 'dnd' | 'invisible'>('online');
   const [userStatuses, setUserStatuses] = useState<Record<string, 'online' | 'dnd'>>({});
-  // FEAT-006: feedback modal — state lives here so both the floating button
-  // (desktop) and the user menu entry (mobile-safe) can open it.
+  // FEAT-006: feedback modal state (opened from the user menu in ServerRail).
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   // FEAT-052: DND also silences LOCAL desktop notifications (push is suppressed
