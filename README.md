@@ -8,7 +8,7 @@ It delivers private messaging, community chat, and real-time calling across:
 - **Android** (Capacitor)
 
 ---
-
+https://recline.social
 ## Overview
 
 Recline Client is designed to feel fast, clean, and familiar while supporting advanced communication features:
