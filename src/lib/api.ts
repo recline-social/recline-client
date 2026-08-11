@@ -73,7 +73,7 @@ export interface UserPayload {
   /** Unix ms — users.created_at. Present on all login/signup/me responses. */
   createdAt?: number;
   /** PBKDF2 salt for v2 auth key derivation. Exposed to authenticated clients via /api/auth/me
-   *  so they can derive the auth key locally for confirmation endpoints (zero-knowledge). */
+   *  so they can derive the auth key locally for confirmation endpoints (client-derived credential). */
   authKdfSalt?: string | null;
 }
 
@@ -236,7 +236,7 @@ export const api = {
   // CRYPTO-008: password is sent in the POST body, not as a query parameter.
   // GET ?password=... would expose credentials in server logs, browser history, and Referer headers.
   /** Retrieve the encrypted DM key backup.
-   *  Zero-knowledge path: if authKdfSalt is provided the caller has already PBKDF2-derived
+   *  Client-derived credential path: if authKdfSalt is provided the caller has already PBKDF2-derived
    *  the auth key, so we send `authDerivedKey` and the raw password never leaves the device.
    *  Legacy path: authKdfSalt is null/undefined → send raw password (v1 users). */
   getDmKeyBackup: (password: string, authKdfSalt?: string | null) => {
@@ -260,11 +260,17 @@ export const api = {
     });
   },
 
-  putDmKeyBackup: (backup: string) =>
-    request<{ ok: boolean }>('/api/auth/me/dm-key-backup', {
+  /** Store/replace the encrypted DM key backup with credential confirmation.
+   *  This prevents a stolen session token from destroying recovery material. */
+  putDmKeyBackup: async (backup: string, password: string, authKdfSalt?: string | null) => {
+    const credential = authKdfSalt
+      ? { authDerivedKey: await import('./crypto').then(({ deriveAuthKey }) => deriveAuthKey(password, authKdfSalt)) }
+      : { password };
+    return request<{ ok: boolean }>('/api/auth/me/dm-key-backup', {
       method: 'PUT',
-      body: JSON.stringify({ backup }),
-    }),
+      body: JSON.stringify({ backup, ...credential }),
+    });
+  },
 
   /** Fetch per-user KDF salt before login so the client can derive the auth key. */
   getAuthSalt: (username: string) =>
@@ -459,7 +465,7 @@ export const api = {
   /** Send an E2E encrypted DM message. Optional file attachment fields can be included. */
   sendDmMessage: (
     dmId: string,
-    payload: ({ ciphertext: string; nonce: string } | { body: string } | Record<string, unknown>) & {
+    payload: ({ ciphertext: string; nonce: string } | Record<string, unknown>) & {
       replyToId?: string | null;
       fileUrl?: string; fileName?: string; fileSize?: number; fileType?: string;
     },
@@ -589,13 +595,9 @@ export const api = {
   getSupporterStatus: () =>
     request<{ isSupporter: boolean }>('/api/payment/status'),
 
-  /**
-   * Start the Stripe checkout flow for the Founding Supporter plan.
-   * Returns the Stripe Checkout URL — redirect the user to it.
-   * (Server-side: GET /api/payment/checkout redirects automatically,
-   *  so calling window.location.href = '/api/payment/checkout' works directly.)
-   */
-  getCheckoutUrl: () => `${getServerUrl() || ''}/api/payment/checkout`,
+  /** Create an authenticated Stripe Checkout session for the supporter plan. */
+  createSupporterCheckout: () =>
+    request<{ url: string }>('/api/payment/checkout', { method: 'POST' }),
 
   // ── Uploads ──────────────────────────────────────────────────────────────
   /**

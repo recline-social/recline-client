@@ -509,7 +509,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
               const currentJwk = JSON.parse(localJwk) as JsonWebKey;
               const historyJwks = preservedHistory(old, currentJwk);
               const blob = await encryptDmKeyBackup(privJwk, password, historyJwks);
-              await api.putDmKeyBackup(blob);
+              await api.putDmKeyBackup(blob, password, authKdfSalt);
             }
             // If privJwk is still null here (non-extractable IDB key, no matching backup),
             // we can't produce a backup this session — non-fatal, user can rotate to create one.
@@ -552,7 +552,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
               const currentJwk = JSON.parse(localJwk) as JsonWebKey;
               const historyJwks = preservedHistory(old, currentJwk);
               const blob = await encryptDmKeyBackup(privJwk, password, historyJwks);
-              await api.putDmKeyBackup(blob);
+              await api.putDmKeyBackup(blob, password, authKdfSalt);
             }
           } catch { /* non-fatal */ }
         }
@@ -743,7 +743,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
         const privJwk = await exportPrivateKeyJwk(pair.privateKey);
         if (privJwk) {
           const blob = await encryptDmKeyBackup(privJwk, password);
-          await api.putDmKeyBackup(blob);
+          await api.putDmKeyBackup(blob, password, authKdfSalt);
         }
       } catch { /* non-fatal */ }
     }
@@ -880,7 +880,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
             }
           } catch { /* no old backup to chain — non-fatal */ }
           const blob = await encryptDmKeyBackup(privJwkForBackup, password, historyJwks);
-          await api.putDmKeyBackup(blob);
+          await api.putDmKeyBackup(blob, password, user?.authKdfSalt ?? null);
         } catch {
           // BUG 4: surface backup failure instead of swallowing it silently
           setDmBackupOutOfSync(true);
@@ -975,7 +975,7 @@ export function useDmKeys({ user, dmsRef, setDms, dmMessagesRef, setDmMessages, 
       if (privJwk) {
         try {
           const blob = await encryptDmKeyBackup(privJwk, password, []);
-          await api.putDmKeyBackup(blob);
+          await api.putDmKeyBackup(blob, password, user?.authKdfSalt ?? null);
           setDmBackupOutOfSync(false);
         } catch {
           setDmBackupOutOfSync(true);

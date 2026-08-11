@@ -5,7 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0F0F12" />
-    <title>Recline</title>
+    <title>Recline - Private, Encrypted Community Chat</title>
+    <meta name="description" content="Recline is private, encrypted community chat with real-time messaging and calls. Follow @ReclineApp on X and @reclinechat on Instagram for product updates." />
+    <meta name="robots" content="index, follow" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Recline - Private, Encrypted Community Chat" />
+    <meta property="og:description" content="Private, encrypted community chat by Recline. Follow @ReclineApp on X and @reclinechat on Instagram." />
+    <meta property="og:url" content="https://app.recline.social" />
+    <meta property="og:site_name" content="Recline" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Recline - Private, Encrypted Community Chat" />
+    <meta name="twitter:description" content="Private, encrypted community chat by Recline. Follow @ReclineApp on X and @reclinechat on Instagram." />
+    <meta name="twitter:site" content="@ReclineApp" />
+    <link rel="canonical" href="https://app.recline.social" />
+    <link rel="me" href="https://x.com/ReclineApp" />
+    <link rel="me" href="https://www.instagram.com/reclinechat" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
@@ -20,6 +34,18 @@
     />
     <!-- Cloudflare Turnstile — render=explicit so React owns the lifecycle -->
     <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "Recline",
+        "url": "https://recline.social",
+        "sameAs": [
+          "https://x.com/ReclineApp",
+          "https://www.instagram.com/reclinechat"
+        ]
+      }
+    </script>
   </head>
   <body class="bg-ink-950 text-ink-100 antialiased">
     <div id="root"></div>

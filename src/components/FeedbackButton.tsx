@@ -89,7 +89,7 @@ export function FeedbackButton({ open, onOpenChange }: FeedbackButtonProps) {
             {/* Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
               <div>
-                <h2 className="text-sm font-semibold">Alpha feedback</h2>
+                <h2 className="text-sm font-semibold">Open Beta feedback</h2>
                 <p className="text-[11px] text-ink-400 mt-0.5">Help shape Recline — every note matters</p>
               </div>
               <button onClick={close} className="btn-ghost h-7 w-7 grid place-items-center rounded-lg text-ink-400">

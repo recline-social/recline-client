@@ -218,7 +218,7 @@ function TotpDisable({
   }
 
   const isTotp = /^\d{6}$/.test(code);
-  const isBackup = /^[A-Z0-9]{4}-?[A-Z0-9]{4}$/.test(code.toUpperCase());
+  const isBackup = /^(?:[A-Z0-9]{8}-?[A-Z0-9]{8}|[A-Z0-9]{4}-?[A-Z0-9]{4})$/.test(code.toUpperCase());
 
   return (
     <form onSubmit={submit} className="space-y-3">
@@ -231,8 +231,9 @@ function TotpDisable({
           autoFocus
           className="input mt-1 text-center font-mono tracking-[0.2em]"
           value={code}
-          onChange={(e) => setCode(e.target.value.slice(0, 9))}
-          placeholder="000000 or XXXX-XXXX"
+          onChange={(e) => setCode(e.target.value.replace(/[^A-Z0-9-]/gi, '').toUpperCase().slice(0, 17))}
+          placeholder="000000 or XXXXXXXX-XXXXXXXX"
+          maxLength={17}
           required
         />
       </label>

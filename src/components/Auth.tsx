@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, setToken } from '../lib/api';
 import { deriveAuthKey, generateAuthSalt } from '../lib/crypto';
 import type { User } from '../types';
+import { SocialLinks } from './SocialLinks';
 
 // Site key is PUBLIC — baked in at Vite build time. Empty string → widget disabled.
 const TS_SITE_KEY = (import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined) ?? '';
@@ -127,9 +128,9 @@ function TotpScreen({
     setError(null);
   }
 
-  // TOTP: exactly 6 digits. Backup: up to 9 chars (XXXX-XXXX format).
+  // TOTP: exactly 6 digits. Backup: current 17-char or legacy 9-char format.
   const isReady = useBackup
-    ? /^[A-Z0-9]{4}-?[A-Z0-9]{4}$/.test(code)
+    ? /^(?:[A-Z0-9]{8}-?[A-Z0-9]{8}|[A-Z0-9]{4}-?[A-Z0-9]{4})$/.test(code)
     : /^\d{6}$/.test(code);
 
   async function submit(e: React.FormEvent) {
@@ -156,7 +157,7 @@ function TotpScreen({
         <h2 className="font-semibold text-ink-100">Two-factor authentication</h2>
         <p className="text-xs text-ink-300 mt-1">
           {useBackup
-            ? 'Enter one of your 8-character backup codes (XXXX-XXXX).'
+            ? 'Enter one of your backup codes (XXXXXXXX-XXXXXXXX).'
             : 'Enter the 6-digit code from your authenticator app.'}
         </p>
       </div>
@@ -172,10 +173,10 @@ function TotpScreen({
               className="input mt-1 text-center font-mono tracking-widest uppercase"
               value={code}
               onChange={(e) =>
-                setCode(e.target.value.replace(/[^A-Z0-9-]/gi, '').toUpperCase().slice(0, 9))
+                setCode(e.target.value.replace(/[^A-Z0-9-]/gi, '').toUpperCase().slice(0, 17))
               }
-              placeholder="XXXX-XXXX"
-              maxLength={9}
+              placeholder="XXXXXXXX-XXXXXXXX"
+              maxLength={17}
               required
             />
           ) : (
@@ -286,9 +287,10 @@ function ResetScreen({ onBack }: { onBack: () => void }) {
           <FieldLabel>Backup code</FieldLabel>
           <input
             className="input mt-1 font-mono tracking-widest uppercase"
-            placeholder="XXXX-XXXX"
+            placeholder="XXXXXXXX-XXXXXXXX"
             value={backupCode}
-            onChange={(e) => setBackupCode(e.target.value)}
+            onChange={(e) => setBackupCode(e.target.value.replace(/[^A-Z0-9-]/gi, '').toUpperCase().slice(0, 17))}
+            maxLength={17}
             required
           />
         </label>
@@ -416,7 +418,7 @@ export function Auth({ onAuthed }: Props) {
     setError(null);
     try {
       if (mode === 'signup') {
-        // Zero-knowledge: derive auth key client-side before sending.
+        // Client-derived credential: derive auth key client-side before sending.
         // The raw password never leaves this device.
         const authSalt = generateAuthSalt();
         const authDerivedKey = await deriveAuthKey(password, authSalt);
@@ -433,7 +435,7 @@ export function Auth({ onAuthed }: Props) {
         setBackupCodes(r.backupCodes);
         setScreen('backup-codes');
       } else {
-        // Zero-knowledge login: fetch auth version + salt first.
+        // Client-derived credential login: fetch auth version + salt first.
         // v2 users: derive key locally, send derived key (never raw password).
         // v1 legacy users: send raw password once — server migrates them to v2.
         const saltInfo = await api.getAuthSalt(username);
@@ -466,7 +468,7 @@ export function Auth({ onAuthed }: Props) {
   // ── Routing by screen ────────────────────────────────────────────────────
   if (screen === 'backup-codes' && pendingUser) {
     return (
-      <div className="h-full w-full grid place-items-center bg-app-grad">
+      <div className="h-full w-full bg-app-grad flex flex-col items-center justify-center px-4">
         <BackupCodesScreen
           codes={backupCodes}
           onDone={() => {
@@ -475,13 +477,15 @@ export function Auth({ onAuthed }: Props) {
             setPassword('');
           }}
         />
+        <p className="text-[11px] text-ink-500 mt-4 mb-2">Follow Recline for product updates.</p>
+        <SocialLinks compact />
       </div>
     );
   }
 
   if (screen === 'totp') {
     return (
-      <div className="h-full w-full grid place-items-center bg-app-grad">
+      <div className="h-full w-full bg-app-grad flex flex-col items-center justify-center px-4">
         <TotpScreen
           pendingToken={pendingTotpToken}
           onSuccess={(token, user) => {
@@ -494,21 +498,25 @@ export function Auth({ onAuthed }: Props) {
             setPendingTotpToken('');
           }}
         />
+        <p className="text-[11px] text-ink-500 mt-4 mb-2">Follow Recline for product updates.</p>
+        <SocialLinks compact />
       </div>
     );
   }
 
   if (screen === 'reset') {
     return (
-      <div className="h-full w-full grid place-items-center bg-app-grad">
+      <div className="h-full w-full bg-app-grad flex flex-col items-center justify-center px-4">
         <ResetScreen onBack={() => setScreen('main')} />
+        <p className="text-[11px] text-ink-500 mt-4 mb-2">Follow Recline for product updates.</p>
+        <SocialLinks compact />
       </div>
     );
   }
 
   // ── Main login / signup form ─────────────────────────────────────────────
   return (
-    <div className="h-full w-full grid place-items-center bg-app-grad">
+    <div className="h-full w-full bg-app-grad flex flex-col items-center justify-center px-4">
       <div className="w-[380px] panel rounded-3xl p-7 shadow-soft">
         <div className="flex items-center gap-3 mb-5">
           <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-accent-violet to-accent-rose grid place-items-center">
@@ -517,9 +525,14 @@ export function Auth({ onAuthed }: Props) {
               <path d="M7 11V7a5 5 0 0 1 10 0v4" />
             </svg>
           </div>
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight">Recline</h1>
-            <p className="text-[11px] text-ink-300">Private, encrypted, no bullshit.</p>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg font-semibold tracking-tight">Recline</h1>
+              <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-emerald-300">
+                Open Beta
+              </span>
+            </div>
+            <p className="text-[11px] text-ink-300">Encrypted text, transparent boundaries.</p>
           </div>
         </div>
 
@@ -627,9 +640,11 @@ export function Auth({ onAuthed }: Props) {
         <p className="text-[11px] text-ink-300/70 mt-5 leading-relaxed">
           {mode === 'signup'
             ? "After creating your account you'll receive 10 backup codes — the only way to recover access if you lose your password. Save them somewhere safe."
-            : 'Your message content stays encrypted in your browser using a separate server passphrase you choose for each community.'}
+            : 'New text messages are encrypted in your browser using a separate passphrase for each community. Attachments and routing metadata remain service-visible.'}
         </p>
       </div>
+      <p className="text-[11px] text-ink-500 mt-4 mb-2">Follow Recline for product updates.</p>
+      <SocialLinks compact />
     </div>
   );
 }

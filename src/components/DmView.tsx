@@ -844,7 +844,7 @@ export function DmView({
         ) : (
           <div className="text-[10px] mt-1 px-1">
             {isEncrypted
-              ? <span className="text-emerald-500/70">ECDH P-256 + HKDF-SHA256 + AES-GCM-256 · messages and file attachments are E2E encrypted</span>
+              ? <span className="text-emerald-500/70">ECDH P-256 + HKDF-SHA256 + AES-GCM-256 · text is encrypted; attachments are service-visible</span>
               : <span className="text-amber-500/70">Waiting for peer to register encryption key</span>}
           </div>
         )}

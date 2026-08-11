@@ -1,157 +1,71 @@
 # Recline Client
 
-Recline Client is the frontend application for the Recline chat experience.
+**Open Beta**
 
-It delivers private messaging, community chat, and real-time calling across:
-- **Web** (React + Vite)
-- **Desktop** (Tauri)
-- **Android** (Capacitor)
+This repository contains the publicly reviewable Recline client used for the web, Tauri desktop, and Capacitor mobile experiences. It is published so users and researchers can inspect the client-side encryption, networking, WebRTC, storage, notification, and user-interface code used by official Recline builds.
 
----
-https://recline.social
-## Overview
+The service backend and operational infrastructure are not included in this repository.
 
-Recline Client is designed to feel fast, clean, and familiar while supporting advanced communication features:
+## Security boundaries
 
-- Real-time channels and direct messages
-- End-to-end encrypted messaging flows in-app
-- Voice/video calls with screen sharing
-- Reactions, mentions, pins, and unread tracking
-- Shared UI across browser, desktop, and mobile builds
+Current channel and direct-message text is encrypted by the client. The current direct-message design uses P-256 ECDH, HKDF-SHA256, and AES-GCM. Channel text uses a PBKDF2-derived AES-GCM key.
 
----
+Important limitations:
 
-## Tech Stack
+- The current direct-message protocol does not provide Double Ratchet forward secrecy or post-compromise security.
+- Attachments and attachment metadata are not end-to-end encrypted.
+- The service can observe routing, membership, timestamps, reactions, read state, moderation records, payment records, and other operational metadata.
+- Browser state remains exposed to same-origin script compromise and local-device compromise.
 
-- React 18
-- TypeScript
-- Vite
-- Tailwind CSS
-- Socket.IO Client
-- Tauri v2
-- Capacitor
-- Vitest
+## Verify and build
 
----
+Requirements:
 
-## Quick Start
-
-From `client/`:
+- Node.js 20
+- npm
 
 ```bash
-npm install
+npm ci
+npm run typecheck
+npm test
+npm run build
+```
+
+Run the browser client in development:
+
+```bash
 npm run dev
 ```
 
-Default development URL: `http://localhost:5173`
+The Vite development server reads client-safe variables from `.env.local` in this repository. For example:
 
-Run client and local server together:
-
-```bash
-npm run dev:withserver
+```dotenv
+VITE_API_PROXY=https://app.recline.social
+VITE_TURNSTILE_SITE_KEY=your_public_site_key
 ```
 
----
+All `VITE_*` values are embedded in the browser bundle and must be treated as public configuration, never as server secrets.
 
-## Build and Test
-
-```bash
-npm run build
-npm run test
-```
-
-Additional useful commands:
-
-```bash
-npm run preview
-npm run dev:vite-only
-```
-
----
-
-## Desktop (Tauri)
-
-Run desktop in development:
+## Desktop
 
 ```bash
 npm run tauri:dev
-```
-
-Build desktop release artifacts:
-
-```bash
 npm run tauri:build
 ```
 
-Generate icons:
+Official desktop builds connect to the canonical Recline service endpoint configured in the client source.
 
-```bash
-npm run tauri:icon -- /path/to/source.png
-```
-
----
-
-## Android (Capacitor)
-
-Build and sync Android project:
+## Android
 
 ```bash
 npm run build:android
-```
-
-Open Android Studio:
-
-```bash
 npm run cap:open:android
 ```
 
-Sync only:
+## Source provenance
 
-```bash
-npm run cap:sync
-```
-
----
-
-## Environment
-
-In development, the client reads environment values from the repository root (`../.env`).
-
-Common variables:
-
-- `VITE_API_PROXY` - local API/socket proxy target
-- `VITE_TURNSTILE_SITE_KEY` - client-side Turnstile site key
-
-`VITE_*` variables are embedded at build time, so rebuild after updates.
-
----
-
-## Project Structure
-
-```text
-client/
-  src/
-    components/      UI components
-    hooks/           app hooks
-    lib/             API, crypto, WebRTC, notifications, utilities
-  src-tauri/         desktop configuration
-  android/           Android project
-```
-
----
-
-## Reviewer Guide
-
-For readers and reviewers, these files are good starting points:
-
-- `src/App.tsx`
-- `src/lib/crypto.ts`
-- `src/hooks/useDmKeys.ts`
-- `src/lib/webrtc.ts`
-- `src/components/MarkdownContent.tsx`
-
----
+`SOURCE_VERSION` identifies the release branch and source revision used to generate the current public mirror. The public repository is updated automatically from the reviewed client directory in the private release source.
 
 ## License
 
-See repository licensing files for current terms.
+AGPL-3.0-only. See `LICENSE`.

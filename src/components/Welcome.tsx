@@ -1,3 +1,5 @@
+import { SocialLinks } from './SocialLinks';
+
 type Props = { onCreate: () => void; onJoin: () => void };
 
 export function Welcome({ onCreate, onJoin }: Props) {
@@ -13,7 +15,7 @@ export function Welcome({ onCreate, onJoin }: Props) {
         <h2 className="text-2xl font-semibold tracking-tight mb-2">Welcome to Recline.</h2>
         <p className="text-sm text-ink-300 leading-relaxed mb-6">
           A quiet, private place for people you actually trust. Messages encrypt in your browser before
-          they leave your device. Calls are peer-to-peer. No ads, no tracking, no paywalls.
+          they leave your device. Calls are peer-to-peer. No ads. Optional diagnostics are off by default. Core chat remains available without a subscription.
         </p>
         <div className="flex gap-2 justify-center">
           <button className="btn-primary" onClick={onCreate}>
@@ -23,6 +25,10 @@ export function Welcome({ onCreate, onJoin }: Props) {
             Join with invite
           </button>
         </div>
+        <p className="text-[11px] text-ink-500 mt-6 mb-2">
+          Follow Recline for updates, releases, and feature previews.
+        </p>
+        <SocialLinks compact />
       </div>
     </div>
   );

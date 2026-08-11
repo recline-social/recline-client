@@ -1,11 +1,10 @@
 {
   "name": "recline-client",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0-beta.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:withserver": "concurrently -k -n server,vite -c blue,magenta \"npm --prefix ../server run dev\" \"vite\"",
     "dev:vite-only": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
@@ -17,7 +16,8 @@
     "tauri:icon": "tauri icon",
     "cap:sync": "npx cap sync",
     "cap:open:android": "npx cap open android",
-    "build:android": "npm run build && npx cap sync"
+    "build:android": "npm run build && npx cap sync",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.4",

@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import type { Channel, CallPeer, Member, ServerSummary, DecodedMessage, User } from '../types';
 import { Avatar } from './Avatar';
+import { SocialLinks } from './SocialLinks';
 
 type ChannelState = {
   messages: DecodedMessage[];
@@ -359,6 +360,14 @@ export function ServerHome({
           </section>
         )}
 
+      </div>
+      <div className="px-4 md:px-8 pb-6">
+        <div className="border-t border-white/[0.06] pt-4">
+          <p className="text-[11px] text-ink-500 text-center mb-2">
+            Stay connected with Recline updates and community highlights.
+          </p>
+          <SocialLinks compact />
+        </div>
       </div>
     </div>
   );

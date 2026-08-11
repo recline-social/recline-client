@@ -1,3 +1,5 @@
+import { SocialLinks } from './SocialLinks';
+
 type Props = {
   onCreateServer: () => void;
   onJoinServer: () => void;
@@ -41,6 +43,9 @@ export function EmptyHome({ onCreateServer, onJoinServer }: Props) {
       >
         Recline
       </h1>
+      <span className="mb-3 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-emerald-300">
+        Open Beta
+      </span>
 
       {/* Tagline */}
       <p className="text-[11px] text-ink-400 tracking-widest uppercase mb-10 font-medium">
@@ -168,8 +173,10 @@ export function EmptyHome({ onCreateServer, onJoinServer }: Props) {
           <rect x="3" y="11" width="18" height="11" rx="2" />
           <path d="M7 11V7a5 5 0 0 1 10 0v4" />
         </svg>
-        <span>Your messages are end-to-end encrypted</span>
+        <span>New text messages use client-side encryption</span>
       </div>
+
+      <SocialLinks className="mt-6" compact />
 
     </div>
   );

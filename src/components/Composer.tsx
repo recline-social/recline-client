@@ -657,7 +657,7 @@ export function Composer({ placeholder, disabled, onSend, onTyping, replyingTo, 
         </div>
       ) : (
         <div className="mt-1 px-1 text-[11px] text-ink-300/60 hidden md:block">
-          {disabled ? 'Unlock this space to send messages.' : 'Messages are encrypted in your browser. The server only sees ciphertext.'}
+          {disabled ? 'Unlock this space to send messages.' : 'Text is encrypted in your browser. Attachments are not end-to-end encrypted.'}
         </div>
       )}
     </div>

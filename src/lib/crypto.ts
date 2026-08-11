@@ -1,7 +1,7 @@
 const PBKDF2_ITERS = 300_000; // Increased from 200k for 2026 OWASP compliance (PBKDF2-SHA-256)
 const SESSION_KEY_PREFIX = 'recline.aeskey.';
 
-// ── Zero-knowledge auth key derivation ───────────────────────────────────────
+// ── Client-derived credential auth key derivation ───────────────────────────────────────
 // These must stay in sync with the server-side KDF parameters in auth.ts.
 const AUTH_KDF_ITERATIONS = 210_000; // OWASP minimum for PBKDF2-SHA-256 (2024+)
 

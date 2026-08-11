@@ -1,10 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Recline",
-  "version": "0.1.0",
+  "version": "0.2.0-beta.1",
   "identifier": "app.recline.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev:withserver",
+    "beforeDevCommand": "npm run dev:vite-only",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
@@ -50,7 +50,7 @@
     ],
     "category": "SocialNetworking",
     "shortDescription": "Privacy-first encrypted chat, calls, and communities.",
-    "longDescription": "Recline is an end-to-end encrypted alternative to Discord. No email required, no ads, no tracking. Your messages stay yours.",
+    "longDescription": "Recline is an Open Beta encrypted community platform. Channel text and direct-message text are encrypted by current clients; message metadata and unencrypted attachment files remain visible to the service.",
     "copyright": "Copyright (c) Recline contributors",
     "publisher": "Recline"
   }

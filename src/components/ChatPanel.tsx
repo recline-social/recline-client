@@ -201,7 +201,7 @@ export function ChatPanel({
             <>
               <span className="h-3.5 w-px bg-white/10 mx-2 hidden md:block" />
               <span className="text-[11px] text-ink-300 truncate hidden md:block">
-                {encrypted ? 'End-to-end encrypted in your browser' : 'Server locked — passphrase required'}
+                {encrypted ? 'Text encrypted in your browser' : 'Server locked — passphrase required'}
               </span>
             </>
           )}
@@ -451,7 +451,7 @@ function EmptyState({ channelName, encrypted }: { channelName: string; encrypted
         <h3 className="text-base font-semibold text-ink-100">#{channelName}</h3>
         <p className="text-sm text-ink-300 mt-1">
           {encrypted
-            ? 'This is the start of your encrypted channel. Messages are encrypted in your browser before they leave your device.'
+            ? 'This is the start of your encrypted channel. Text is encrypted in your browser before it leaves your device; attachments are service-visible.'
             : 'Enter the server passphrase to unlock and read this channel.'}
         </p>
       </div>
