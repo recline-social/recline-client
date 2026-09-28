@@ -1,5 +1,5 @@
 # Recline Client
-[](READMEPHOTO.png)
+[](public/android-chrome-512x512.png)
 **Open Beta**
 
 This repository contains the publicly reviewable Recline client used for the web, Tauri desktop, and Capacitor mobile experiences. It is published so users and researchers can inspect the client-side encryption, networking, WebRTC, storage, notification, and user-interface code used by official Recline builds.
