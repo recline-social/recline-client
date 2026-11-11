@@ -14,7 +14,7 @@
 
 This repository contains Recline's publicly reviewable client code, including the web interface, Tauri desktop application and Capacitor mobile integration.
 
-**[Official Website](https://recline.social) · [Launch Recline](https://app.recline.social) · [Roadmap](https://recline.social/roadmap/) · [SourceForge](https://sourceforge.net/software/product/Recline/)**
+**[Official Website](https://recline.social) · [Launch Recline](https://app.recline.social) · [Roadmap](https://recline.social/roadmap/) · [SourceForge](https://sourceforge.net/software/product/Recline/) · [Linktree](https://linktr.ee/recline/)**
 
 ---
 
